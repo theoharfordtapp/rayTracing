@@ -32,3 +32,5 @@ All three of these require a `scene` parameter, and take an optional `options` p
 
 Render the scene using the `{engine}.render()` method on any rendering engine. This provides a `Rendered()` object, from which information such as `rays`, `time`, `traces`, etc. can be obtained.\
 To get the actual image, use the `{rendered}.imageAs()`, providing a `type` parameter: `list` for raw image data, `np` for a numpy array, and `cv2` for a BGR-flipped numpy array, for use with Python-OpenCV.
+
+### Run cornellTest.py for a demo.
