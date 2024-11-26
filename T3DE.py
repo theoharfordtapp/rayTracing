@@ -15,18 +15,6 @@ import trimesh
 import json
 import copy
 
-# MARK: NPENC
-## Convert Numpy types into Python types
-class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if type(obj) == np.integer:
-            return int(obj)
-        if type(obj) == np.floating:
-            return float(obj)
-        if type(obj) == np.ndarray:
-            return obj.tolist()
-        return super(NpEncoder, self).default(obj)
-
 
 # MARK: MATRIX
 ## 9x9 matrix used to calculate rotations
@@ -135,10 +123,10 @@ class Euler:
 # MARK: RAY
 ## Ray used for tracing paths
 class Ray:
-    def __init__(self, start, direction, IOR, object) -> None:
+    def __init__(self, start, direction, ior, object) -> None:
         self.start = start
         self.direction = direction.normalise()
-        self.IOR = IOR
+        self.ior = ior
         self.object = object
     
     # MARK: > REPR
@@ -154,6 +142,25 @@ class Ray:
     ## Convert ray to normalised vector
     def toVec3(self):
         return (self.pointOnRay(1) - self.start).normalise()
+    
+    def toDict(self):
+        objectDict = self.object.toDict() if self.object else None
+        return {
+            'start': [*self.start],
+            'direction': [*self.direction],
+            'ior': self.ior,
+            'object': objectDict,
+        }
+    
+    @staticmethod
+    def fromDict(data):
+        object = Object.fromDict(data.get('object', None)) if data.get('object', None) else None
+        return Ray(
+            start=Vec3(*data.get('start', [0, 0, 0])),
+            direction=Vec3(*data.get('direction', [0, 0, 0])),
+            ior=data.get('ior', 1),
+            object=object,
+        )
     
     # MARK: > GET T
     ## Get distance along ray where a collision with a plane occurs
@@ -260,10 +267,11 @@ class MathematicalSphere:
 # MARK: TRACE
 ## Node of a ray trace tree, used to store information about a ray trace
 class TraceTreeNode:
-    def __init__(self, ray, collisionInfo, next=None) -> None:
+    def __init__(self, ray, collisionInfo, left=None, right=None) -> None:
         self.ray = ray
         self.collisionInfo = collisionInfo
-        self.next = next if next is not None else [None, None]
+        self.left = left if left is not None else None
+        self.right = right if right is not None else None
 
     # MARK: > REPR
     ## (Recursive)
@@ -277,15 +285,67 @@ class TraceTreeNode:
         
         ## Create text representation of node with correct indent level
         indent = ' | ' * depth
-        text = f"{indent}{(str(index)+': ') if index >= 0 else ''}⟬\u001b[36m{node.ray:.2f}\u001b[0m, \u001b[33m({node.collisionInfo[0]:.2f}, {node.collisionInfo[1].name, node.collisionInfo[1].type}, {node.collisionInfo[2]:.2f}, {node.collisionInfo[3]}, {node.collisionInfo[4]})\u001b[0m⟭\n"
+        text = f"{indent}{(str(index)+': ') if index >= 0 else ''}⟬\u001b[36m{node.ray:.2f}\u001b[0m, \u001b[33m({node.collisionInfo['coordinate']:.2f}, {node.collisionInfo['object'].name, node.collisionInfo['object'].type}, {node.collisionInfo['normal']:.2f}, {node.collisionInfo['direction']}, {node.collisionInfo['face']})\u001b[0m⟭\n"
         
         ## Recursion
-        if node.next[0] is not None:
-            text += self.repr(node.next[0], depth + 1, index=0)
-        if node.next[1] is not None:
-            text += self.repr(node.next[1], depth + 1, index=1)
+        if node.left is not None:
+            text += self.repr(node.left, depth + 1, index=0)
+        if node.right is not None:
+            text += self.repr(node.right, depth + 1, index=1)
         
         return text
+    
+    def toDict(self):
+        leftNode = self.left.toDict() if self.left else None
+        rightNode = self.right.toDict() if self.right else None
+        
+        face = [int(vertex) for vertex in [*self.collisionInfo['face']]] if self.collisionInfo['face'] != None else None
+        
+        collisionInfo = {
+            'coordinate': [*self.collisionInfo['coordinate']],
+            'object': self.collisionInfo['object'].toDict(),
+            'normal': [*self.collisionInfo['normal']],
+            'direction': int(self.collisionInfo['direction']),
+            'face': face,
+        }
+        
+        return {
+            'ray': self.ray.toDict(),
+            'collisionInfo': collisionInfo,
+            'left': leftNode,
+            'right': rightNode,
+        }
+    
+    @staticmethod
+    def fromDict(data):
+        leftNode = TraceTreeNode.fromDict(data.get('left', None)) if data.get('left', None) else None
+        rightNode = TraceTreeNode.fromDict(data.get('right', None)) if data.get('right', None) else None
+        
+        defaultRayData = {
+            'start': [0, 0, 0],
+            'direction': [0, 0, 0],
+        }
+        ray = Ray.fromDict(data.get('ray', defaultRayData))
+        
+        defaultCollisionInfoData = {
+            'coordinate': None,
+            'object': None,
+            'normal': None,
+            'direction': None,
+            'face': None,
+        }
+        collisionInfoData = data.get('collisionInfo', defaultCollisionInfoData)
+        face = tuple(collisionInfoData['face']) if collisionInfoData['face'] != None else None
+        
+        collisionInfo = {
+            'coordinate': Vec3(*collisionInfoData['coordinate']),
+            'object': Object.fromDict(collisionInfoData['object']),
+            'normal': Vec3(*collisionInfoData['normal']),
+            'direction': collisionInfoData['direction'],
+            'face': face,
+        }
+        
+        return TraceTreeNode(ray, collisionInfo, leftNode, rightNode)
 
 
 # MARK: RGB
@@ -558,181 +618,88 @@ class Scene:
         self.objects = []
         self.camera = None
     
-    # MARK: > TO JSON
-    ## Convert scene data to JSON to save
-    def toJSON(self):
+    # MARK: > TO DICT
+    ## Convert scene data to dict to save
+    def toDict(self):
         ## Combine camera and objects data
         data = {
-            'camera': self.camera.toJSON(),
-            'objects': [object.toJSON for object in self.objects if object.type != 'camera']
+            'camera': self.camera.toDict(),
+            'objects': [object.toDict() for object in self.objects if object != self.camera]
         }
         
         return data
     
-    # MARK: > FROM JSON
-    ## Open a JSON file and convert it to a scene object
+    # MARK: > FROM DICT
+    ## Load scene data from dict
+    @staticmethod
+    def fromDict(data):
+        scene = Scene()
+
+        cameraData = data.get('camera', {})
+        camera = Camera.fromDict(cameraData)
+        
+        camera.scene = scene
+        camera.id = cameraData.get('id', 0)
+        
+        scene.camera = camera
+        
+        for obj in data.get('objects', []):
+            object = Object.fromDict(obj)
+            
+            scene.objects.append(object)
+
+            if object == scene.camera:
+                continue
+
+            object.scene = scene
+            object.id = obj.get('id', len(scene.objects))
+        
+        return scene
+
+    def saveJSON(self, filepath):
+        data = self.toDict()
+        with open(filepath, 'w') as f:
+            json.dump(data, f)
+    
     @staticmethod
     def fromJSON(filepath):
         with open(filepath, 'r') as f:
-            ## Get data and setup an empty scene
             data = json.load(f)
-            scene = Scene()
-            
-            ## Setup camera
-            cameraData = data['camera']
-            if cameraData != None:
-                camera = Camera(scene=scene)
-                
-                ## Set camera name
-                camera.name = cameraData['name'],
-                
-                ## Set camera transform
-                camera.position = Vec3(*cameraData['position'])
-                camera.rotation = Euler(*cameraData['rotation'])
-
-                ## Set camera dimensions
-                camera.length = cameraData['length']
-                camera.resolutionHeight = cameraData['resolutionHeight']
-                camera.resolutionWidth = cameraData['resolutionWidth']
-                
-                ## Set camera debug color
-                camera.shader = Shader(debugColor=RGB(*cameraData['shader']['debugColor']))
-            
-            ## Setup objects
-            objectsData = data['objects']
-            for objectData in objectsData:
-                ## Setup light information
-                if objectData['type'] == 'light':
-                    object = Light(scene=scene)
-                    
-                    ## Set light name
-                    object.name = objectData['name']
-                    
-                    ## Set light transform
-                    object.position = Vec3(*objectData['position'])
-                    object.rotation = Euler(*objectData['rotation'])
-                    object.scale = Scale(*objectData['scale'])
-                    
-                    ## Set light strength
-                    object.strength = objectData['strength']
-                    
-                    ## Set light color
-                    object.shader = Shader(
-                        debugColor=RGB(*objectData['shader']['debugColor']),
-                        color=RGB(*objectData['shader']['color'])
-                    )
-                ## Setup sphere information
-                elif objectData['type'] == 'sphere':
-                    object = Sphere(scene=scene)
-                    
-                    ## Set sphere name
-                    object.name = objectData['name']
-                    
-                    ## Set sphere transform
-                    object.position = Vec3(*objectData['position'])
-                    object.rotation = Euler(*objectData['rotation'])
-                    object.scale = Scale(*objectData['scale'])
-                    
-                    ## Set sphere shader
-                    object.shader = Shader() # TODO: SHADERS!
-                ## Set mesh information
-                elif objectData['type'] == 'mesh':
-                    object = Object(scene=scene)
-                
-                    ## Set object name
-                    object.name = objectData['name']
-                    
-                    ## Set object transform
-                    object.position = Vec3(*objectData['position'])
-                    object.rotation = Euler(*objectData['rotation'])
-                    object.scale = Scale(*objectData['scale'])
-                    
-                    ## Set object shader
-                    object.shader = Shader(
-                        debugColor=RGB(*objectData['shader']['debugColor']),
-                        color=RGB(*objectData['shader']['color']),
-                        
-                        roughness=objectData['shader']['roughness'],
-                        shininess=objectData['shader']['shininess'],
-                        reflectivity=objectData['shader']['reflectivity'],
-                        ior=objectData['shader']['ior']
-                    )
-                    
-                    ## Set object mesh
-                    object.mesh = Mesh(
-                        vertices=[Vec3(vertex[0], vertex[1], vertex[2]) for vertex in objectData['mesh']['vertices']],
-                        faces=objectData['mesh']['faces']
-                    )
-            
-            return scene
+        
+        return Scene.fromDict(data)
 
 # MARK: SHADER
 ## Shader structure providing information about an object's surface properties
 class Shader:
-    def __init__(self, debugColor=None, color=None, roughness=1, shininess=1, reflectivity=1, emissionStrength=0) -> None:
+    def __init__(self, debugColor=None, color=None, roughness=1, reflectivity=1, emissionStrength=0) -> None:
         self.debugColor = debugColor if debugColor is not None else RGB(200, 200, 200)
         self.color = color if color is not None else RGB(200, 200, 200)
         self.roughness = roughness
-        self.shininess = shininess
         self.reflectivity = reflectivity
         self.emissionStrength = emissionStrength
     
-    # MARK: > FROM JSON
-    ## Get JSON data and convert into shader object
+    # MARK: > TO DICT
+    ## Convert shader data to dict to save
+    def toDict(self):
+        return {
+            'debugColor': [*self.debugColor],
+            'color': [*self.color],
+            'roughness': self.roughness,
+            'reflectivity': self.reflectivity,
+            'emissionStrength': self.emissionStrength,
+        }
+
+    # MARK: > FROM DICT
+    ## Get dict data and convert into shader object
     @staticmethod
-    def fromJSON(json):
-        ## Assume defaults
-        defaultColor = [200, 200, 200]
-        defaultRoughness = 1
-        defaultShininess = 1
-        defaultReflectivity = 1
-        defaultEmissionStrength = 0
-
-        ## Get data from JSON, revert to defaults where unavailable
-        color = RGB(*json.get('color', defaultColor))
-        debugColor = RGB(*json.get('debugColor', color))
-        roughness = json.get('roughness', defaultRoughness)
-        shininess = json.get('shininess', defaultShininess)
-        reflectivity = json.get('reflectivity', defaultReflectivity)
-        emissionStrength = json.get('emissionStrength', defaultEmissionStrength)
-
-        ## Convert to a shader object
+    def fromDict(data):
         return Shader(
-            debugColor=debugColor,
-            color=color,
-            roughness=roughness,
-            shininess=shininess,
-            reflectivity=reflectivity,
-            emissionStrength=emissionStrength
+            debugColor=RGB(*data.get('debugColor', [0, 0, 0])),
+            color=RGB(*data.get('color', [0, 0, 0])),
+            roughness=data.get('roughness', 1),
+            reflectivity=data.get('reflectivity', 1),
+            emissionStrength=data.get('emissionStrength', 0),
         )
-    
-    # MARK: > TO JSON
-    ## Convert shader data to JSON to save
-    def toJSON(self, type):
-        if type == 'camera':
-            ## Only bother saving default color for camera
-            return {
-                'debugColor': [*self.debugColor]
-            }
-        if type in ['mesh', 'sphere']:
-            ## Save all properties if object
-            return {
-                'debugColor': [*self.debugColor],
-                'color': [*self.color],
-                
-                'roughness': self.roughness,
-                'shininess': self.shininess,
-                'reflectivity': self.reflectivity,
-            }
-        elif type == 'light':
-            ## Only bother saving color for light
-            return {
-                'debugColor': [*self.debugColor],
-                'color': [*self.color],
-            }
-        else:
-            ## Default to none if type not recognised
-            return {}
 
     def __repr__(self) -> str:
         return f'debugColor: {self.debugColor}\ncolor: {self.color}\nroughness: {self.roughness}\nshininess: {self.shininess}\nreflectivity: {self.reflectivity}\nemissionStrength: {self.emissionStrength}\n'
@@ -742,36 +709,22 @@ class Shader:
 class Material:
     def __init__(self, ior=1) -> None:
         self.ior = ior
-
-    # MARK: > FROM JSON
-    ## Get JSON data and convert into material object
-    @staticmethod
-    def fromJSON(json):
-        ## Assume defaults
-        defaultIOR = 1
-
-        ## Get data from JSON, revert to defaults where unavailable
-        ior = RGB(*json.get('ior', defaultIOR))
-
-        ## Convert to a material object
-        return Shader(
-            ior=ior
-        )
     
-    # MARK: > TO JSON
-    ## Convert material data to JSON to save
-    def toJSON(self, type):
-        if type in ['camera', 'light']:
-            ## Don't bother saving material information for intangible objects
-            return {}
-        if type in ['mesh', 'sphere']:
-            ## Save all properties if object
-            return {
-                'ior': self.ior
-            }
-        else:
-            ## Default to none if type not recognised
-            return {}
+    # MARK: > TO DICT
+    ## Convert material data to dict to save
+    def toDict(self):
+        return {
+            'ior': self.ior,
+        }    
+
+    # MARK: > FROM DICT
+    ## Get dict data and convert into material object
+    @staticmethod
+    def fromDict(data):
+        return Material(
+            ior=data.get('ior', 1)
+        )
+        
 
 # MARK: MESH
 ## Mesh structure providing an object's faces and the vertices that they are made up of
@@ -804,7 +757,6 @@ class Mesh:
             (v0.z + v1.z + v2.z) / 3
         )
         return centroid
-        
 
     def __repr__(self):
         returnString = ''
@@ -822,6 +774,19 @@ class Mesh:
     def flipNormals(self):
         for i, face in enumerate(self.faces):
             self.faces[i] = face[::-1]
+    
+    def toDict(self):
+        return {
+            'vertices': [[*vec] for vec in self.vertices],
+            'faces': [[int(vertex) for vertex in face] for face in self.faces],
+        }
+
+    @staticmethod
+    def fromDict(data):
+        return Mesh(
+            vertices=[Vec3(*vec) for vec in data.get('vertices', [])],
+            faces=[tuple([int(vertex) for vertex in face]) for face in data.get('faces', [])],
+        )
 
 class Scale:
     def __init__(self, x, y, z) -> None:
@@ -861,11 +826,10 @@ class Scale:
 
 class BVHNode:
     def __init__(self, box=(None, None), left=None, right=None, faces=None):
-        self.box = box  # A tuple containing (minVec, maxVec)
-        self.left = left  # Left child (another Node)
-        self.right = right  # Right child (another Node)
-        self.faces = faces  # List of faces, if it's a leaf node
-        self.isLeaf = faces is not None  # True if it's a leaf node
+        self.box = box
+        self.left = left
+        self.right = right
+        self.faces = faces
 
     def merge(self, other):
         new_min = Vec3(
@@ -881,12 +845,49 @@ class BVHNode:
         return (new_min, new_max)
     
     def __repr__(self) -> str:
-        return f'[{self.box[0]}, {self.box[1]}], {self.left}, {self.right}, {self.faces[:4] if self.isLeaf else "not a leaf"}\n'
+        return f'[{self.box[0]}, {self.box[1]}], {self.left}, {self.right}, {self.faces[:4] if self.faces else "not a leaf"}\n'
+
+    def toDict(self):
+        faces = [[int(vertex) for vertex in face] for face in self.faces] if self.faces != None else None
+        
+        leftNode = None
+        rightNode = None
+        if self.left:
+            leftNode = self.left.toDict()
+        if self.right:
+            rightNode = self.right.toDict()
+
+        return {
+            'box': [[*vec] if vec != None else None for vec in self.box],
+            
+            'left': leftNode,
+            'right': rightNode,
+            
+            'faces': faces,
+        }
+    
+    @staticmethod
+    def fromDict(data):
+        loadedLeft = data.get('left', {})
+        if loadedLeft != None:
+            loadedLeft = BVHNode.fromDict(loadedLeft)
+        loadedRight = data.get('right', {})
+        if loadedRight != None:
+            loadedRight = BVHNode.fromDict(loadedRight)
+
+        return BVHNode(
+            box=[Vec3(*vec) if vec != None else None for vec in data.get('box', [None, None])],
+            
+            left=loadedLeft,
+            right=loadedRight,
+            
+            faces=data.get('faces', None),
+        )
 
 
 class Object:
     def __init__(self, scene, name=None, mesh=None, position=None) -> None:
-        self.scene = scene
+        self.__scene = scene
         self.id = len(self.scene.objects)
         self.name = name if name is not None else 'Empty'
         self.position = position if position is not None else Vec3(0, 0, 0)
@@ -901,6 +902,15 @@ class Object:
         
         self.scene.objects.append(self)
         self._defaultShaders()
+    
+    @property
+    def scene(self):
+        return self.__scene
+    
+    @scene.setter
+    def scene(self, scene):
+        self.__scene = scene
+        self.id = len(self.__scene.objects)
     
     def _defaultShaders(self):
         defaultShader = Shader()
@@ -940,63 +950,81 @@ class Object:
         self.shaders = [shader for shader in shadersJSON.values()]
         self.shaderIndices = [shaderIndex for shaderIndex in facesJSON.values()]
     
-    def toJSON(self):
+    def toDict(self):
+        meshDict = self.mesh.toDict() if self.mesh else Mesh([], []).toDict()
+        data = {
+            'id': self.id,
+
+            'name': self.name,
+            'type': self.type,
+            
+            'position': [*self.position],
+            'rotation': [*self.rotation],
+            'scale': [*self.scale],
+            
+            'mesh': meshDict,
+            
+            'shaders': [shader.toDict() for shader in self.shaders],
+            'shaderIndices': self.shaderIndices,
+            
+            'material': self.material.toDict(),
+            
+            'bvh': self.bvh.toDict(),
+        }
+
         if self.type == 'camera':
-            return {
-                'name': self.camera.name,
+            cameraData = {
+                'resolutionWidth': self.resolutionWidth,
+                'resolutionHeight': self.resolutionHeight,
                 
-                'position': [*self.camera.position],
-                'rotation': [*self.camera.rotation],
-                
-                'length': self.camera.length*20,
-                'resolutionWidth': self.camera.resolutionWidth,
-                'resolutionHeight': self.camera.resolutionHeight,
-                
-                'shader': self.shaders[0].toJSON('camera')
+                'width': self.width,
+                'length': self.length,
             }
-        if object.type == 'mesh':
+            
             return {
-                'name': object.name,
-                'type': 'mesh',
-                
-                'position': [*object.position],
-                'rotation': [*object.rotation],
-                'scale': [*object.scale],
-                
-                'shaders': [shader.toJSON('mesh') for shader in self.shaders],
-                'shaderIndices': self.shaderIndices,
-                
-                'mesh': {
-                    'vertices': [[vertex.x, vertex.y, vertex.z] for vertex in object.mesh.vertices],
-                    'faces': object.mesh.faces
-                }
+                **data,
+                **cameraData
             }
-        elif object.type == 'light':
+
+        if self.type == 'light':
             return {
-                'name': object.name,
-                'type': 'light',
-                
-                'position': [*object.position],
-                'rotation': [*object.rotation],
-                'scale': [*object.scale],
-                
-                'strength': object.strength,
-                
-                'shader': self.shaders[0].toJSON('light')
+                **data,
+                'strength': self.strength,
             }
-        elif object.type == 'sphere':
-            return {
-                'name': object.name,
-                'type': 'sphere',
-                
-                'position': [*object.position],
-                'rotation': [*object.rotation],
-                'scale': [*object.scale],
-                
-                'shader': self.shaders[0].toJSON('sphere')
-            }
-        else:
-            return {}
+        
+        return data
+    
+    @staticmethod
+    def fromDict(data): # NOTE ## Objects are loaded into a new empty scene if loaded individually. To load into a given scene, either load the scene itself, or load the object and then reset its scene property to the correct scene.
+        obj = Object(scene=Scene())
+
+        obj.name = data.get('name', 'Empty Object')
+        obj.type = data.get('type', 'empty')
+        
+        obj.position = Vec3(*data.get('position', [0, 0, 0]))
+        obj.rotation = Euler(*data.get('rotation', [0, 0, 0]))
+        obj.scale = Scale(*data.get('scale', [0, 0, 0]))
+        
+        obj.mesh = Mesh.fromDict(data.get('mesh', {'vertices': [], 'faces': []}))
+        
+        obj.shaders = [Shader.fromDict(shaderDict) for shaderDict in data.get('shaders', [])]
+        obj.shaderIndices = data.get('shaderIndices', [])
+        
+        obj.material = Material.fromDict(data.get('material', {}))
+        
+        obj.bvh = BVHNode.fromDict(data.get('bvh', {}))
+
+        if obj.type == 'camera':
+            obj.resolutionWidth = data.get('resolutionWidth', 1440)
+            obj.resolutionHeight = data.get('resolutionHeight', 900)
+            
+            obj.width = data.get('width', 1.6)
+            obj.length = data.get('length', 1)
+
+        if obj.type == 'light':
+            obj.strength = data.get('strength', 1)
+        
+        return obj
     
     def setTransforms(self):
         if self.type == 'mesh':

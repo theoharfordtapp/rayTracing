@@ -1,6 +1,7 @@
 from T3DE import Scene, Object, Mesh, Scale, Shader, Light, Camera, Vec3, RGB, Cube, Sphere, Material
-from T3DR import Photon, Debug, Texel
+from T3DR import Photon, Debug, Texel, Post
 import math
+import json
 import cv2
 
 scene: Scene = Scene()
@@ -19,21 +20,21 @@ boxShader = Shader(
     debugColor = RGB(100, 100, 100)
 )
 boxEmissionShader = Shader(
-    color = RGB(255, 255, 240),
-    debugColor = RGB(120, 120, 100),
-    emissionStrength = 0.8
+    color = RGB(255, 255, 120),
+    debugColor = RGB(120, 120, 20),
+    emissionStrength = 0.6
 )
 redWallShader = Shader(
     reflectivity = 1,
     roughness = 0.68,
-    color = RGB(220, 20, 20),
-    debugColor = RGB(220, 20, 20)
+    color = RGB(220, 40, 160),
+    debugColor = RGB(220, 40, 160)
 )
 greenWallShader = Shader(
     reflectivity = 1,
     roughness = 0.68,
-    color = RGB(20, 220, 20),
-    debugColor = RGB(20, 220, 20)
+    color = RGB(20, 220, 220),
+    debugColor = RGB(20, 220, 220)
 )
 box.setShader(boxShader)
 box.setShader(boxEmissionShader, [24, 29])
@@ -41,21 +42,21 @@ box.setShader(redWallShader, [4, 5])
 box.setShader(greenWallShader, [44, 45])
 box.position = Vec3(0, 0, 1)
 
-cube: Object = Object(scene=scene, name='Cube', mesh=monkeyMesh)
-cubeShader = Shader(
+monkey: Object = Object(scene=scene, name='Monkey', mesh=monkeyMesh)
+monkeyShader = Shader(
     reflectivity = 0.2,
     roughness = 0.04,
     color = RGB(180, 180, 180),
     debugColor = RGB(180, 180, 180)
 )
-cubeMaterial = Material(
+monkeyMaterial = Material(
     ior=1.4
 )
-cube.setShader(cubeShader)
-cube.material = cubeMaterial
-cube.setTransforms()
-cube.position = Vec3(1.44, -1.8, 1.4)
-cube.scale = Scale(1.8, 1.8, 1.8)
+monkey.setShader(monkeyShader)
+monkey.material = monkeyMaterial
+monkey.setTransforms()
+monkey.position = Vec3(1.44, -1.8, 1.4)
+monkey.scale = Scale(1.8, 1.8, 1.8)
 
 mirrorBall: Sphere = Sphere(scene=scene, name='Mirror ball')
 mirrorBallShader = Shader(
@@ -90,7 +91,7 @@ debug = Debug(scene=scene, options={
 renderer = Photon(scene=scene, options={
     'progressMode': 'none',
     
-    'step': 8,
+    'step': 80,
     'fillStep': True,
     
     'bounces': 3,
@@ -120,6 +121,12 @@ tex = Texel(scene=scene)
 render = renderer.render()
 
 debug.inspect(render, scene)
+
+compressedRenderDict = Post.compressRenderedDict(render.toDict(), 10)
+
+data = compressedRenderDict
+with open('renders/renderedTest.json', 'w') as f:
+    json.dump(data, f)
 
 # FIXME # Texel face indexing only works after Photon has been run (on the same scene)
 

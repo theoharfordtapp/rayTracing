@@ -15,6 +15,8 @@ import numpy as np
 import random
 import math
 import time
+import copy
+import json
 import cv2
 
 # MARK: NBC ERROR
@@ -28,8 +30,11 @@ class NoBoundCameraError(Exception):
 # MARK: RENDERED
 ## Essentially an image, but with extra information about how it was rendered
 class Rendered:
-    def __init__(self, data, traces, width, height, time=None, rays=None, options=None, failed=False, engine=None):
-        self.data = [[(pix[2], pix[1], pix[0]) for pix in row] for row in data] ## Convert BGR to RGB
+    def __init__(self, imgData, traces, width, height, time=None, rays=None, options=None, failed=False, engine=None):
+        self.imgData = [
+            [(pix[2], pix[1], pix[0]) for pix in row]
+            for row in imgData
+        ] ## Convert BGR to RGB
         self.traces = traces
         self.width = width
         self.height = height
@@ -43,66 +48,74 @@ class Rendered:
     def imageAs(self, type):
         match type:
             case 'list':
-                return self.data
+                return self.imgData
             case 'cv2': ## Convert RGB to BGR
                 return np.array([
-                    [(pix[2], pix[1], pix[0]) for pix in row] for row in self.data
+                    [(pix[2], pix[1], pix[0]) for pix in row]
+                    for row in self.imgData
                 ]).astype(np.uint8)
             case 'np':
-                return np.array(self.data).astype(np.uint8)
-
-    # def savePNG(self, filename):
-    #     imageArray = np.array(self.data).astype(np.uint8)
-    #     image = Image.fromarray(imageArray)
-
-    #     for key, traceNode in self.traces.items():
-    #         print(traceNode)
-
-    #     tracesDict = {
-    #         str(key): [traceNode.asDict() if traceNode != None else None for traceNode in value] for key, value in self.traces.items()
-    #     }
+                return np.array(self.imgData).astype(np.uint8)
+    
+    def toDict(self):
+        options = self.options
+        if 'ambient' in options.keys():
+            options['ambient'] = [*options['ambient']]
+        return {
+            'imgData': [[
+                [int(pix[0]), int(pix[1]), int(pix[2])]
+                for pix in row]
+                for row in self.imgData
+            ],
+            'traces': {
+                str(pixel[0]) + ',' + str(pixel[1]): [trace.toDict() if trace != None else None for trace in pixTraces] 
+                for pixel, pixTraces in self.traces.items()
+            },
+            'width': self.width,
+            'height': self.height,
+            'time': self.time,
+            'rays': self.rays,
+            'options': options,
+            'failed': self.failed,
+            'engine': self.engine,
+        }
+    
+    @staticmethod
+    def fromDict(data):
+        options = data.get('options', {})
         
-    #     metadata = {
-    #         'Traces': json.dumps(tracesDict),
-    #         'Width': str(self.width),
-    #         'Height': str(self.height),
-    #         'Time': str(self.time),
-    #         'Rays': str(self.rays),
-    #         'Options': json.dumps(self.options)
-    #     }
-
-    #     image.save(filename, pnginfo=Image.PngInfo(metadata))
-
-    # @staticmethod
-    # def fromPng(filename):
-    #     with Image.open(filename) as img:
-    #         metadata = img.info
-    #         imageArray = np.array(img)
-
-    #     tracesDict = json.loads(metadata.get('Traces', '{}'))
-    #     traces = {
-    #         tuple(map(int, key.strip("()").split(','))): [
-    #             TraceTreeNode.fromDict(traceNode) if traceNode != None else None for traceNode in value
-    #         ]
-    #         for key, value in tracesDict.items()
-    #     }
+        if 'ambient' in options.keys():
+            options['ambient'] = RGB(*options['ambient'])
+        return Rendered(
+            imgData=[[
+                (int(pix[2]), int(pix[1]), int(pix[0]))
+                for pix in row]
+                for row in data.get('imgData', [])
+            ],
+            traces={
+                (int(pixel.split(',')[0]), int(pixel.split(',')[1])): [TraceTreeNode.fromDict(trace) if trace != None else None for trace in pixTraces] 
+                for pixel, pixTraces in data.get('traces', {}).items()
+            },
+            width=data.get('width', 1440),
+            height=data.get('height', 900),
+            time=data.get('time', 0),
+            rays=data.get('rays', 0),
+            options=options,
+            failed=data.get('failed', False),
+            engine=data.get('engine', 'debug'),
+        )
+    
+    def saveJSON(self, filepath):
+        data = self.toDict()
+        with open(filepath, 'w') as f:
+            json.dump(data, f)
+    
+    @staticmethod
+    def fromJSON(filepath):
+        with open(filepath, 'r') as f:
+            data = json.load(f)
         
-    #     # Reconstruct the Rendered object from metadata
-    #     width = int(metadata.get('Width', '0'))
-    #     height = int(metadata.get('Height', '0'))
-    #     time = float(metadata.get('Time', '0.0'))
-    #     rays = int(metadata.get('Rays', '0'))
-    #     options = json.loads(metadata.get('Options', '{}'))
-
-    #     return Rendered(
-    #         data=imageArray.tolist(),
-    #         traces=traces,
-    #         width=width,
-    #         height=height,
-    #         time=time,
-    #         rays=rays,
-    #         options=options
-    #     )
+        return Rendered.fromDict(data)
 
 
 # MARK: DEBUG
@@ -156,7 +169,7 @@ class Debug:
         rayStartPixelY = round((rayVectorY / self.options['size']) + halfHeight)
         
         if None not in traceNode.collisionInfo:
-            collisionPoint = traceNode.collisionInfo[0]
+            collisionPoint = traceNode.collisionInfo['coordinate']
             # print(collisionPoint)
 
             ## Get the ray end position
@@ -167,12 +180,12 @@ class Debug:
             ## Draw ray
             cv2.line(image, (rayStartPixelX, rayStartPixelY), (rayEndPixelX, rayEndPixelY), color, thickness=1)
             
-            collisionColor = (0, 0, 255) if traceNode.collisionInfo[3] == 0 else (0, 255, 0)
+            collisionColor = (0, 0, 255) if traceNode.collisionInfo['direction'] == 0 else (0, 255, 0)
             
             ## Draw collision
             cv2.circle(image, (rayEndPixelX, rayEndPixelY), 2, collisionColor, thickness=-1)
             
-            normalEnd = collisionPoint + traceNode.collisionInfo[2]
+            normalEnd = collisionPoint + traceNode.collisionInfo['normal']
             normalEndVectorX, normalEndVectorY = self.mapCoordinates(*normalEnd)
             normalEndPixelX = round((normalEndVectorX / self.options['size']) + halfWidth)
             normalEndPixelY = round((normalEndVectorY / self.options['size']) + halfHeight)
@@ -193,10 +206,10 @@ class Debug:
             cv2.line(image, (rayStartPixelX, rayStartPixelY), (rayEndPixelX, rayEndPixelY), color, thickness=1)
 
         ## Recursion
-        if traceNode.next[0] is not None:
-            self.renderTraceNode(image, traceNode.next[0], halfWidth, halfHeight, (0, 80, 200))
-        if traceNode.next[1] is not None:
-            self.renderTraceNode(image, traceNode.next[1], halfWidth, halfHeight, (200, 80, 0))
+        if traceNode.left is not None:
+            self.renderTraceNode(image, traceNode.left, halfWidth, halfHeight, (0, 80, 200))
+        if traceNode.right is not None:
+            self.renderTraceNode(image, traceNode.right, halfWidth, halfHeight, (200, 80, 0))
 
     # MARK: > CAMERA
     ## Draw the camera
@@ -321,7 +334,7 @@ class Debug:
         self.transformedScene = deepcopy(self.scene)
             
         for object in self.transformedScene.objects:
-            object.setTransforms(parents=True)
+            object.setTransforms()
         
         ## Set up image
         image = np.zeros((self.options['height'],self.options['width'],3), np.uint8)
@@ -373,7 +386,6 @@ class Debug:
                 continue
             ## If object is mesh-based
             elif object.type != 'mesh': continue
-            # object.setTransforms(parents=False)
             if self.options['debug']:
                 print(object.position)
             for face in object.mesh.faces:
@@ -422,17 +434,17 @@ class Debug:
         # print(trace)
         
         ## Define information
-        objName = trace.collisionInfo[1].name
-        objType = trace.collisionInfo[1].type
+        objName = trace.collisionInfo['object'].name
+        objType = trace.collisionInfo['object'].type
         directLight = tracer.getDirectLight(trace.collisionInfo)
-        face = trace.collisionInfo[4]
+        face = trace.collisionInfo['face']
         face_index = None
         
         ## Create text
         text = f'Name: {objName}\nType: {objType}\nDirect Light: {directLight}'
         if face != None and objType == 'mesh':
             print(face)
-            face_index = trace.collisionInfo[1].mesh.faces.index(face)
+            face_index = trace.collisionInfo['object'].mesh.faces.index(face)
             text += f'\nFace: {face}\nFace Index: {face_index}'
         lines = text.split('\n')
 
@@ -565,7 +577,7 @@ class Photon:
         ## Base cases
         if not ray.entersAABB(bvh.box):
             return []
-        if bvh.isLeaf:
+        if bvh.faces:
             return bvh.faces
 
         leftFaces = None
@@ -701,18 +713,24 @@ class Photon:
                                     collisionNormal = facePlane.normal
                                     collisionFace = face
 
-        return (closestCollision, collisionObj, collisionNormal, collisionDirection, collisionFace)
+        return {
+            'coordinate': closestCollision,
+            'object': collisionObj,
+            'normal': collisionNormal,
+            'direction': collisionDirection,
+            'face': collisionFace,
+        }
         
     # def mapToUV(self, collisionInfo):
-    #     faceVertices = [object.mesh.vertices[collisionInfo[4][i]] for i in range(0, 3)]
+    #     faceVertices = [object.mesh.vertices[collisionInfo['face'][i]] for i in range(0, 3)]
     
     # MARK: > BOUNCE
     ## Get the ray after bouncing off a surface
     def indirectBounce(self, ray, collisionInfo) -> Ray:
         ## Define information
-        bouncePoint = collisionInfo[0]
-        obj = collisionInfo[1]
-        normal = collisionInfo[2].normalise()
+        bouncePoint = collisionInfo['coordinate']
+        obj = collisionInfo['object']
+        normal = collisionInfo['normal'].normalise()
 
         ## Get a perfectly diffusive reflection; using multiple samples accounts for the randomness
         diffuseDirection = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1))
@@ -726,7 +744,7 @@ class Photon:
         # bounceDirection = (specularDirection * (1-obj.shader.roughness)) + (diffuseDirection * obj.shader.roughness)
         
         ## Get roughness of the face
-        face = collisionInfo[4]
+        face = collisionInfo['face']
         roughness = 1
         if obj.type == 'mesh':
             roughness = obj.shaders[obj.shaderIndices[obj.mesh.faces.index(face)]].roughness
@@ -736,7 +754,7 @@ class Photon:
         ## Combine diffusive and specular reflections to calculate ray
         bounceDirection = (specularDirection * (1-roughness)) + (diffuseDirection * roughness)
         bounceStart = bouncePoint + bounceDirection*0.1
-        returnRay = Ray(bounceStart, bounceDirection, ray.IOR, ray.object)
+        returnRay = Ray(bounceStart, bounceDirection, ray.ior, ray.object)
 
         return returnRay
     
@@ -744,13 +762,13 @@ class Photon:
     ## Get the visibility of a ray to a light source to calculate shadows
     def visibility(self, ray) -> float:
         ## Get closest collision
-        collision = self.getCollision(ray, True, False)
-        collisionObj = collision[1]
-        collisionFace = collision[4]
+        collisionInfo = self.getCollision(ray, True, False)
+        collisionObj = collisionInfo['object']
+        collisionFace = collisionInfo['face']
         
         if collisionObj != None and collisionObj.type == 'mesh' and self.options['debug']:
             print('rayStart:', ray.start)
-            print('collisionPoint:', collision[0])
+            print('collisionPoint:', collisionInfo['coordinate'])
             print('name:', collisionObj.name)
             print('face:', collisionObj.mesh.faces.index(collisionFace))
             print('emission:', collisionObj.shaders[collisionObj.shaderIndices[collisionObj.mesh.faces.index(collisionFace)]].emissionStrength)
@@ -845,7 +863,7 @@ class Photon:
     def getDirectLight(self, collisionInfo) -> float | int:
         totalColor = RGB(0, 0, 0)
         totalIntensity = 0
-        bouncePoint = collisionInfo[0]
+        bouncePoint = collisionInfo['coordinate']
         lights = []
         for object in self.transformedScene.objects:
             ## If object emits light
@@ -891,39 +909,29 @@ class Photon:
             
             ## Unit vector of the bounce ray and collision normal
             lightVector = (bounceRay.direction).normalise()
-            normal = collisionInfo[2].normalise()
+            normal = collisionInfo['normal'].normalise()
             # print(bounceRay, normal)
 
             ## Get intensity of light on a perfectly diffusive material
             diffuseIntensity = max((0, lightVector.dot(normal)))
             
-            # ## Get shininess of material at collision point
-            # shininess = collisionInfo[1].shader.shininess
-            # shininess = 1
-            # if collisionInfo[1].type == 'mesh':
-            #     shininess = collisionInfo[1].shaders[collisionInfo[1].mesh.faces.index(collisionInfo[4])].shininess
-            # elif collisionInfo[1].type in ['empty', 'sphere']:
-            #     shininess = collisionInfo[1].shaders[0].shininess
-            # shininess = collisionInfo[1].shaders[collisionInfo[1].mesh.faces.index(collisionInfo[4])].shininess
-            
             ## Get reflection vector and view vector
             reflectionVector = ((normal * lightVector.dot(normal) * 2) - lightVector)
-            viewVector = (self.transformedScene.camera.position - collisionInfo[0])
+            viewVector = (self.transformedScene.camera.position - collisionInfo['coordinate'])
             
             ## Get intensity of light on a perfectly specular material
-            # specularIntensity = max((0, reflectionVector.normalise().dot(viewVector.normalise())))**shininess # ORIGINAL
             specularIntensity = max((0, (0 if reflectionVector.normalise().dot(viewVector.normalise()) < 0.96 else 1)))
-            # if collisionInfo[1].name == 'Mirror Ball':
+            # if collisionInfo['object'].name == 'Mirror Ball':
             #     print('specularIntensity:', specularIntensity)
             
             ## Get roughness of material at collision point
-            # roughness = collisionInfo[1].shader.roughness
+            # roughness = collisionInfo['object'].shader.roughness
             roughness = 1
-            if collisionInfo[1].type == 'mesh':
-                roughness = collisionInfo[1].shaders[collisionInfo[1].shaderIndices[collisionInfo[1].mesh.faces.index(collisionInfo[4])]].roughness
-            elif collisionInfo[1].type in ['empty', 'sphere']:
-                roughness = collisionInfo[1].shaders[0].roughness
-            # roughness = collisionInfo[1].shaders[collisionInfo[1].mesh.faces.index(collisionInfo[4])].roughness
+            if collisionInfo['object'].type == 'mesh':
+                roughness = collisionInfo['object'].shaders[collisionInfo['object'].shaderIndices[collisionInfo['object'].mesh.faces.index(collisionInfo['face'])]].roughness
+            elif collisionInfo['object'].type in ['empty', 'sphere']:
+                roughness = collisionInfo['object'].shaders[0].roughness
+            # roughness = collisionInfo['object'].shaders[collisionInfo['object'].mesh.faces.index(collisionInfo['face'])].roughness
             
             ## Get visibility to determine shadows
             visibility = self.visibility(bounceRay)
@@ -958,12 +966,12 @@ color: {color}\n\n''')
     # MARK: > TRANSMIT
     ## Transmit a ray using appropriate refraction techniques
     def transmit(self, ray, collisionInfo) -> Ray:
-        # return Ray((collisionInfo[0] + (ray.direction * 0.2)), ray.direction)
+        # return Ray((collisionInfo['coordinate'] + (ray.direction * 0.2)), ray.direction)
         ## Get information for refraction
-        normal = collisionInfo[2]
+        normal = collisionInfo['normal']
         oldObject = ray.object
-        oldIOR = ray.IOR
-        newObject = collisionInfo[1]
+        oldIOR = ray.ior
+        newObject = collisionInfo['object']
         newIOR = newObject.material.ior
         # newIOR = newObject.shader.ior
         
@@ -987,7 +995,7 @@ color: {color}\n\n''')
 
         ## Calculate refracted ray
         refractedDirection = (ray.direction * ratio) + (normal * ((ratio * cosThetaI) - cosThetaT))
-        refractedRay = Ray((collisionInfo[0] + (refractedDirection * 0.1)), refractedDirection, newIOR, newObject)
+        refractedRay = Ray((collisionInfo['coordinate'] + (refractedDirection * 0.1)), refractedDirection, newIOR, newObject)
         
         return refractedRay
     
@@ -995,23 +1003,23 @@ color: {color}\n\n''')
     ## (Recursive) Trace a ray's path until it reaches a breakpoint
     def trace(self, ray, bounces, lights=False) -> TraceTreeNode | None:
         ## Get collision and node info
-        collisionInfo = self.getCollision(ray, lights, ray.IOR == 1)
+        collisionInfo = self.getCollision(ray, lights, ray.ior == 1)
         node = TraceTreeNode(ray, collisionInfo)
         # print(collisionInfo)
         
         ## Base cases
-        if collisionInfo[0] == None:
+        if collisionInfo['coordinate'] == None:
             return None
-        elif collisionInfo[1].type == 'light' or (collisionInfo[1].type == 'mesh' and collisionInfo[1].shaders[collisionInfo[1].shaderIndices[collisionInfo[1].mesh.faces.index(collisionInfo[4])]].emissionStrength > 0):
+        elif collisionInfo['object'].type == 'light' or (collisionInfo['object'].type == 'mesh' and collisionInfo['object'].shaders[collisionInfo['object'].shaderIndices[collisionInfo['object'].mesh.faces.index(collisionInfo['face'])]].emissionStrength > 0):
             return node
 
         elif bounces > 1:
             ## Get reflectivity of material at collision point
             reflectivity = 1
-            if collisionInfo[1].type == 'mesh':
-                reflectivity = collisionInfo[1].shaders[collisionInfo[1].shaderIndices[collisionInfo[1].mesh.faces.index(collisionInfo[4])]].reflectivity
-            elif collisionInfo[1].type in ['empty', 'sphere']:
-                reflectivity = collisionInfo[1].shaders[0].reflectivity
+            if collisionInfo['object'].type == 'mesh':
+                reflectivity = collisionInfo['object'].shaders[collisionInfo['object'].shaderIndices[collisionInfo['object'].mesh.faces.index(collisionInfo['face'])]].reflectivity
+            elif collisionInfo['object'].type in ['empty', 'sphere']:
+                reflectivity = collisionInfo['object'].shaders[0].reflectivity
             
             ## Not perfectly opaque
             if reflectivity != 1:
@@ -1043,8 +1051,8 @@ color: {color}\n\n''')
                 bounceNode = None
             
             ## Chain nodes to create trace tree
-            node.next[0] = bounceNode
-            node.next[1] = transmitNode
+            node.left = bounceNode
+            node.right = transmitNode
 
         return node
 
@@ -1055,55 +1063,55 @@ color: {color}\n\n''')
         if trace == None:
             return self.options['ambient']
         ## Object is light
-        if trace.collisionInfo[1].type == 'light':
+        if trace.collisionInfo['object'].type == 'light':
             ## Get light color and strength
-            # color = trace.collisionInfo[1].shader.color
-            color = trace.collisionInfo[1].shaders[0].color
-            color *= trace.collisionInfo[1].strength
+            # color = trace.collisionInfo['object'].shader.color
+            color = trace.collisionInfo['object'].shaders[0].color
+            color *= trace.collisionInfo['object'].strength
             
             ## Multiply by attenuation
-            distance = (trace.collisionInfo[0] - self.transformedScene.camera.position).magnitude()
+            distance = (trace.collisionInfo['coordinate'] - self.transformedScene.camera.position).magnitude()
             directAttenuation = self.getAttenuation(distance)
             color *= directAttenuation
             
             return color.clamp()
         ## Object is emissive mesh
-        if trace.collisionInfo[1].type == 'mesh' and trace.collisionInfo[1].shaders[trace.collisionInfo[1].shaderIndices[trace.collisionInfo[1].mesh.faces.index(trace.collisionInfo[4])]].emissionStrength > 0:
+        if trace.collisionInfo['object'].type == 'mesh' and trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength > 0:
             ## Get face color and strength
-            # color = trace.collisionInfo[1].shader.color
-            color = trace.collisionInfo[1].shaders[trace.collisionInfo[1].shaderIndices[trace.collisionInfo[1].mesh.faces.index(trace.collisionInfo[4])]].color
-            color *= trace.collisionInfo[1].shaders[trace.collisionInfo[1].shaderIndices[trace.collisionInfo[1].mesh.faces.index(trace.collisionInfo[4])]].emissionStrength
+            # color = trace.collisionInfo['object'].shader.color
+            color = trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]].color
+            color *= trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength
             
             ## Multiply by attenuation
-            distance = (trace.collisionInfo[0] - self.transformedScene.camera.position).magnitude()
+            distance = (trace.collisionInfo['coordinate'] - self.transformedScene.camera.position).magnitude()
             directAttenuation = self.getAttenuation(distance)
             color *= directAttenuation
             
             return color.clamp()
         
         ## Get shader from object
-        # shader = trace.collisionInfo[1].shader
-        if trace.collisionInfo[1].type == 'mesh':
-            shader = trace.collisionInfo[1].shaders[trace.collisionInfo[1].shaderIndices[trace.collisionInfo[1].mesh.faces.index(trace.collisionInfo[4])]]
-        elif trace.collisionInfo[1].type in ['empty', 'camera', 'sphere']:
-            shader = trace.collisionInfo[1].shaders[0]
+        # shader = trace.collisionInfo['object'].shader
+        if trace.collisionInfo['object'].type == 'mesh':
+            shader = trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]]
+        elif trace.collisionInfo['object'].type in ['empty', 'camera', 'sphere']:
+            shader = trace.collisionInfo['object'].shaders[0]
         else:
-            raise TypeError(f'Could not recognise object type {trace.collisionInfo[1].type}')
+            raise TypeError(f'Could not recognise object type {trace.collisionInfo["object"].type}')
         
         color = shader.color
 
         ## Recursion to get colors from next rays
-        reflectedColor = self.computeColor(trace.next[0], first=False) if trace.next[0] is not None else self.options['ambient'] * (2/255)
-        transmittedColor = self.computeColor(trace.next[1], first=False) if trace.next[1] is not None else self.options['ambient'] * (2/255)
+        reflectedColor = self.computeColor(trace.left, first=False) if trace.left is not None else self.options['ambient'] * (2/255)
+        transmittedColor = self.computeColor(trace.right, first=False) if trace.right is not None else self.options['ambient'] * (2/255)
         
         ## Factors for combination
         reflectivity = shader.reflectivity
         transmissionFactor = 1 - reflectivity
         
         ## Get attenuations
-        reflectedDistance = (trace.next[0].collisionInfo[0]-trace.ray.start).magnitude() if trace.next[0] is not None else 0
+        reflectedDistance = (trace.left.collisionInfo['coordinate']-trace.ray.start).magnitude() if trace.left is not None else 0
         reflectedAttenuation = self.getAttenuation(reflectedDistance)        
-        transmittedDistance = (trace.next[1].collisionInfo[0]-trace.ray.start).magnitude() if trace.next[1] is not None else 0
+        transmittedDistance = (trace.right.collisionInfo['coordinate']-trace.ray.start).magnitude() if trace.right is not None else 0
         transmittedAttenuation = self.getAttenuation(transmittedDistance)
         
         # print(reflectedAttenuation, transmittedAttenuation)
@@ -1229,7 +1237,7 @@ color: {color}\n\n''')
                         ## Either step progress or no progress
                         elif self.options['progressMode'] in ['step', 'none']:
                             ## Render debug preview
-                            if self.options['debug'] and (rayTrace != None and (-0.06 < rayTrace.collisionInfo[0].y < 0.06 or pixelY == 0 or True) or (pixel == (0, 0))):
+                            if self.options['debug'] and (rayTrace != None and (-0.06 < rayTrace.collisionInfo['coordinate'].y < 0.06 or pixelY == 0 or True) or (pixel == (0, 0))):
                                 debugImg = debugRenderer.render(traceTrees=traces).imageAs('cv2')
 
                                 cv2.imshow('debug', debugImg)
@@ -1332,6 +1340,7 @@ class Texel:
             photon = Photon(scene=self.transformedScene)
 
         ## Setup image to work on
+        print('zeros:', (self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3))
         image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
         
         ## Start timing render
@@ -1400,6 +1409,55 @@ class Texel:
         return Rendered(image.tolist(), {}, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight, totalTime, [], self.options, failed=False, engine='texel')
 
 class Post:
+    @staticmethod
+    def compressRenderedDict(rendered, tolerance=10):
+        imgData = rendered['imgData']
+        compressedData = []
+        
+        for row in imgData:
+            compressedRow = []
+            lastPixel = None
+            for pixel in row:
+                if lastPixel == None:
+                    compressedRow.append([pixel, 1])
+                    lastPixel = pixel
+                    continue
+
+                dr = pixel[0] - lastPixel[0]
+                dg = pixel[1] - lastPixel[1]
+                db = pixel[2] - lastPixel[2]
+                
+                d = math.sqrt(dr**2 + dg**2 + db**2)
+                
+                if d <= tolerance:
+                    compressedRow[-1][1] += 1
+                else:
+                    compressedRow.append([pixel, 1])
+                    lastPixel = pixel
+            compressedData.append(compressedRow)
+        
+        newRendered = copy.deepcopy(rendered)
+        newRendered['imgData'] = compressedData
+
+        return newRendered
+    
+    @staticmethod
+    def decompressRenderedDict(rendered):
+        imgData = rendered['imgData']
+        decompressedData = []
+        
+        for row in imgData:
+            decompressedRow = []
+            for pixel in row:
+                for _ in range(pixel[1]):
+                    decompressedRow.append(pixel[0])
+            decompressedData.append(decompressedRow)
+        
+        newRendered = copy.deepcopy(rendered)
+        newRendered['imgData'] = decompressedData
+
+        return newRendered
+    
     @staticmethod
     def denoise(imageData, kernelSize):
         padding = kernelSize // 2
