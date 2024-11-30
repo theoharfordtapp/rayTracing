@@ -5,13 +5,15 @@
 #
 # (Rendering Engines)
 #
-# Note: comments with `MARK` in them are purely IDE-related, displaying section headers in the code minimap. They have no relevance to the program.
+# NOTE # Comments with `MARK` in them are purely IDE-related. They have no relevance to the code.
 
 # MARK: IMPORTS
 from T3DE import Vec3, Ray, MathematicalPlane, MathematicalSphere, RGB, TraceTreeNode, Scale, Mesh, Euler
 from alive_progress import alive_bar
 from copy import deepcopy
+from queue import Queue
 import numpy as np
+import threading
 import random
 import math
 import time
@@ -527,7 +529,7 @@ class Photon:
     # MARK: > ADMIN
     ## Make sure all options exist even when unspecified
     def mergeDefaultOptions(self, options):
-        defaultOptions = {'debug': False, 'debugSize': 10, 'step': 1, 'fillStep': True, 'progressMode': 'step', 'bounces': 1, 'wait': True, 'samples': 1, 'ambient': RGB(20, 20, 20), 'bvh': True, 'debugOptions': {}, 'aabb': True, 'bvh': True, 'lights': True, 'debug': False, 'emissionSampleDensity': 20}
+        defaultOptions = {'debug': False, 'step': 1, 'fillStep': True, 'progressMode': 'step', 'bounces': 1, 'wait': True, 'samples': 1, 'ambient': RGB(20, 20, 20), 'bvh': True, 'debugOptions': {}, 'aabb': True, 'bvh': True, 'lights': True, 'debug': False, 'emissionSampleDensity': 4, 'transformBefore': True, 'threads': 4}
         for optionKey in defaultOptions.keys():
             if optionKey not in options.keys():
                 options[optionKey] = defaultOptions[optionKey]
@@ -606,10 +608,10 @@ class Photon:
         
         for object in self.transformedScene.objects:
             ## Check if ray enters object AABB
-            if object.type in ['sphere', 'light', 'mesh']:
+            if self.options['aabb'] and object.type in ['sphere', 'light', 'mesh']:
                 bvh = object.bvh
                 
-                if self.options['aabb'] and not ray.entersAABB(bvh.box):
+                if not ray.entersAABB(bvh.box):
                     continue
             
             ## If object is sphere-based
@@ -648,6 +650,7 @@ class Photon:
                             collisionDirection = 1
             ## If object is mesh-based
             elif object.type == 'mesh':
+                # print(object.name)
                 ## Get relevant faces
                 if self.options['bvh']:
                     faces = self.getFaces(ray, object.bvh)
@@ -655,17 +658,19 @@ class Photon:
                     faces = object.mesh.faces
 
                 for face in  faces:
-                    # ## Transform face vertices
-                    # faceVerticesLocal = [object.mesh.vertices[face[i]] for i in range(0, 3)]
-                    
-                    # faceVertices = []
-                    
-                    # for vertex in faceVerticesLocal:
-                    #     vertexAbsolute = vertex.applyTransforms(object.position, object.scale, object.rotation)
-                    #     faceVertices.append(vertexAbsolute)
-                    
+                    if not self.options['transformBefore']:
+                        ## Transform face vertices
+                        faceVerticesLocal = [object.mesh.vertices[face[i]] for i in range(0, 3)]
+                        
+                        faceVertices = []
+                        
+                        for vertex in faceVerticesLocal:
+                            vertexAbsolute = vertex.applyTransforms(object.position, object.scale, object.rotation)
+                            faceVertices.append(vertexAbsolute)
+                    else:
+                        ## Get already-transformed faces
+                        faceVertices = [object.mesh.vertices[face[i]] for i in range(0, 3)]
                     ## Get face plane
-                    faceVertices = [object.mesh.vertices[face[i]] for i in range(0, 3)]
                     facePlane = self.getFacePlane(faceVertices)
                     
                     if ray.direction.perpendicular(facePlane.normal):
@@ -705,7 +710,7 @@ class Photon:
                                     collisionDirection = 0
                                 else:
                                     collisionDirection = 1
-
+                                
                                 ## If it is the first or closest collision
                                 if closestCollision == None or (pointOnPlane - ray.start).magnitude() < (closestCollision - ray.start).magnitude():
                                     closestCollision = pointOnPlane
@@ -720,9 +725,6 @@ class Photon:
             'direction': collisionDirection,
             'face': collisionFace,
         }
-        
-    # def mapToUV(self, collisionInfo):
-    #     faceVertices = [object.mesh.vertices[collisionInfo['face'][i]] for i in range(0, 3)]
     
     # MARK: > BOUNCE
     ## Get the ray after bouncing off a surface
@@ -835,7 +837,7 @@ class Photon:
         v0, v1, v2 = [vertices[i] for i in face]
         
         ## Calculate the number of samples to take based on the density
-        numSamples = int(density * self.triangleArea([v0, v1, v2]))
+        numSamples = math.ceil(density * self.triangleArea([v0, v1, v2]))
         
         if self.options['debug']:
             print('numSamples:', numSamples)
@@ -878,9 +880,7 @@ class Photon:
                                     if self.options['debug']:
                                         print('face:', faceIndex)
                                     face = object.mesh.faces[faceIndex]
-                                    # FIXME
-                                    # strength = shader.emissionStrength / (int(self.options['emissionSampleDensity'] * self.triangleArea([object.mesh.vertices[i] for i in face])))
-                                    strength = shader.emissionStrength
+                                    strength = shader.emissionStrength / math.ceil((self.options['emissionSampleDensity'] * self.triangleArea([object.mesh.vertices[i] for i in face])))
                                     color = shader.color
                                     # pos = Mesh.centroid(object.mesh.vertices, face)
                                     for pos in self.getSamplePoints(face, object.mesh.vertices, self.options['emissionSampleDensity']):
@@ -993,9 +993,30 @@ color: {color}\n\n''')
 
         cosThetaT = math.sqrt(1.0 - sinThetaT2)
 
-        ## Calculate refracted ray
-        refractedDirection = (ray.direction * ratio) + (normal * ((ratio * cosThetaI) - cosThetaT))
-        refractedRay = Ray((collisionInfo['coordinate'] + (refractedDirection * 0.1)), refractedDirection, newIOR, newObject)
+        ## Get a perfectly specular refraction
+        specularDirection = (ray.direction * ratio) + (normal * ((ratio * cosThetaI) - cosThetaT))
+
+        ## Get a perfectly diffusive refraction; using multiple samples accounts for the randomness
+        diffuseDirection = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1))
+        diffuseDirection = diffuseDirection.normalise()
+        if diffuseDirection.dot(normal) > 0:
+            diffuseDirection = diffuseDirection * -1
+        
+        ## Get roughness of the face
+        face = collisionInfo['face']
+        roughness = 1
+        if collisionInfo['object'].type == 'mesh':
+            roughness = collisionInfo['object'].shaders[collisionInfo['object'].shaderIndices[collisionInfo['object'].mesh.faces.index(face)]].roughness
+        elif collisionInfo['object'].type in ['empty', 'sphere']:
+            roughness = collisionInfo['object'].shaders[0].roughness
+        
+        ## Combine diffusive and specular refractions to calculate ray
+        bounceDirection = (specularDirection * (1-roughness)) + (diffuseDirection * roughness)
+        bounceStart = collisionInfo['coordinate'] + bounceDirection*0.1
+
+        refractedRay = Ray(bounceStart, bounceDirection, ray.ior, ray.object)
+        
+        # refractedRay = Ray((collisionInfo['coordinate'] + (refractedDirection * 0.1)), refractedDirection, newIOR, newObject)
         
         return refractedRay
     
@@ -1027,10 +1048,6 @@ color: {color}\n\n''')
                 transmitRay = self.transmit(ray, collisionInfo)
                 if transmitRay != None:
                     transmitNode = self.trace(transmitRay, bounces-1, lights=True)
-                    # if transmitNode == None:
-                    #     print('transmitNode is None')
-                    # else:
-                    #     print(transmitNode)
                 else:
                     transmitNode = None
             else:
@@ -1041,10 +1058,6 @@ color: {color}\n\n''')
                 bounceRay = self.indirectBounce(ray, collisionInfo)
                 if bounceRay != None:
                     bounceNode = self.trace(bounceRay, bounces-1, lights=True)
-                    # if bounceNode == None:
-                    #     print('bounceNode is None')
-                    # else:
-                    #     print(bounceNode)
                 else:
                     bounceNode = None
             else:
@@ -1058,16 +1071,19 @@ color: {color}\n\n''')
 
     # MARK: > COLOR
     ## (Recursive) Compute the color of a pixel given its trace
-    def computeColor(self, trace, first=True) -> RGB:
-        ## Base cases
+    def computeColor(self, trace) -> RGB:
+        ## Base case
         if trace == None:
             return self.options['ambient']
+        
+        obj = trace.collisionInfo['object']
+        
         ## Object is light
-        if trace.collisionInfo['object'].type == 'light':
+        if obj.type == 'light':
             ## Get light color and strength
-            # color = trace.collisionInfo['object'].shader.color
-            color = trace.collisionInfo['object'].shaders[0].color
-            color *= trace.collisionInfo['object'].strength
+            # color = obj.shader.color
+            color = obj.shaders[0].color
+            color *= obj.strength
             
             ## Multiply by attenuation
             distance = (trace.collisionInfo['coordinate'] - self.transformedScene.camera.position).magnitude()
@@ -1075,12 +1091,13 @@ color: {color}\n\n''')
             color *= directAttenuation
             
             return color.clamp()
+
         ## Object is emissive mesh
-        if trace.collisionInfo['object'].type == 'mesh' and trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength > 0:
+        if obj.type == 'mesh' and obj.shaders[obj.shaderIndices[obj.mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength > 0:
             ## Get face color and strength
-            # color = trace.collisionInfo['object'].shader.color
-            color = trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]].color
-            color *= trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength
+            # color = obj.shader.color
+            color = obj.shaders[obj.shaderIndices[obj.mesh.faces.index(trace.collisionInfo['face'])]].color
+            color *= obj.shaders[obj.shaderIndices[obj.mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength
             
             ## Multiply by attenuation
             distance = (trace.collisionInfo['coordinate'] - self.transformedScene.camera.position).magnitude()
@@ -1090,19 +1107,19 @@ color: {color}\n\n''')
             return color.clamp()
         
         ## Get shader from object
-        # shader = trace.collisionInfo['object'].shader
-        if trace.collisionInfo['object'].type == 'mesh':
-            shader = trace.collisionInfo['object'].shaders[trace.collisionInfo['object'].shaderIndices[trace.collisionInfo['object'].mesh.faces.index(trace.collisionInfo['face'])]]
-        elif trace.collisionInfo['object'].type in ['empty', 'camera', 'sphere']:
-            shader = trace.collisionInfo['object'].shaders[0]
+        # shader = obj.shader
+        if obj.type == 'mesh':
+            shader = obj.shaders[obj.shaderIndices[obj.mesh.faces.index(trace.collisionInfo['face'])]]
+        elif obj.type in ['empty', 'camera', 'sphere']:
+            shader = obj.shaders[0]
         else:
             raise TypeError(f'Could not recognise object type {trace.collisionInfo["object"].type}')
         
         color = shader.color
 
         ## Recursion to get colors from next rays
-        reflectedColor = self.computeColor(trace.left, first=False) if trace.left is not None else self.options['ambient'] * (2/255)
-        transmittedColor = self.computeColor(trace.right, first=False) if trace.right is not None else self.options['ambient'] * (2/255)
+        reflectedColor = self.computeColor(trace.left) if trace.left is not None else self.options['ambient'] * (2/255)
+        transmittedColor = self.computeColor(trace.right) if trace.right is not None else self.options['ambient'] * (2/255)
         
         ## Factors for combination
         reflectivity = shader.reflectivity
@@ -1132,9 +1149,23 @@ color: {color}\n\n''')
 
         return color.clamp()
     
+    # MARK: > MERGE IMGS
+    ## Merge images using mask
+    def mergeImgs(self, imgs, resWidth, resHeight):
+        ## Setup the empty final image
+        totalImg = np.zeros((resHeight, resWidth, 4), np.uint8)
+
+        ## Iterate images
+        for img in imgs:
+            mask = img[..., 3] == 255
+
+            totalImg = np.where(mask[..., None], img, totalImg)
+        
+        return totalImg
+    
     # MARK: > RENDER
     ## Create a Rendered object based on the scene properties and data
-    def render(self) -> Rendered:
+    def render(self, progressCallback=lambda _, __: None, cancelCallback=lambda: False) -> Rendered:
         print('beginning setup')
         
         ## Copy the scene so object transforms can be applied without repercussions
@@ -1148,129 +1179,176 @@ color: {color}\n\n''')
         if self.options['debug']:
             debugRenderer = Debug(scene=self.transformedScene, options=self.options['debugOptions'])
         
-        ## Set transforms (optimisation - set them at the start instead of applying them for every calculation)
-        for object in self.transformedScene.objects:
-            if object.type == 'mesh':
-                object.setTransforms()
-        
-        print('applied transforms')
+        if self.options['transformBefore']:
+            ## Set transforms (optimisation - set them at the start instead of applying them for every calculation)
+            for object in self.transformedScene.objects:
+                if object.type == 'mesh':
+                    object.setTransforms()
+            
+            print('applied transforms')
 
-        ## Build BVHs (optimisation)
-        for object in self.transformedScene.objects:
-            object.bvh = object.buildBVH()
+        if self.options['bvh']:
+            ## Build BVHs (optimisation)
+            for object in self.transformedScene.objects:
+                object.bvh = object.buildBVH()
 
-        print('built BVHs')
-
-        ## Setup image
-        image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
-        image[:] = (255,255,255)
+            print('built BVHs')
 
         ## Generate the pixels to render based on render modes and resolution
-        pixelOrderX = list(range(0, self.transformedScene.camera.resolutionWidth, (self.options['step'] if self.options['progressMode'] != 'circular' else 1)))
-        pixelOrderY = list(range(0, self.transformedScene.camera.resolutionHeight, (self.options['step'] if self.options['progressMode'] != 'circular' else 1)))
+        pixelOrderX = list(range(0, self.transformedScene.camera.resolutionWidth, (self.options['step'])))
+        pixelOrderY = list(range(0, self.transformedScene.camera.resolutionHeight, (self.options['step'])))
         pixelOrder = []
 
         for i in pixelOrderX:
             for j in pixelOrderY:
                 pixelOrder.append((i, j))
 
-        ## Randomise for circular/random pixel rendering
-        if self.options['progressMode'] == 'circular':
-            renderedPixels = {}
-            random.shuffle(pixelOrder)
-
         ## Store information for Rendered object later
         totalTraces = {}
         self.rays = 0
-        failed = False
         start = time.time()
 
-        with alive_bar(len(pixelOrder)) as bar:
-                for pixel in pixelOrder:
-                    try:
-                        pixelX = pixel[0]
-                        pixelY = pixel[1]
-                        
-                        ## Cast first ray
-                        pixelVec = self.pixelToVector(pixelX, pixelY)
-                        initialRay = self.getRay(pixelVec)
-                        
-                        ## Trace the initial ray several times for more accurate sampling
-                        traces = []
-                        samples = []
-                        for _ in range(self.options['samples'] if self.options['bounces'] > 1 else 1):
-                            rayTrace = self.trace(initialRay, bounces=self.options['bounces'], lights=self.options['lights'])
-                            self.rays += 1
-                            traces.append(rayTrace)
-                            # if rayTrace != None: print(rayTrace)
-                            samples.append(self.computeColor(rayTrace))
+        blockSize = math.ceil(len(pixelOrder)/self.options['threads'])
+        blocks = [pixelOrder[i:i+blockSize] for i in range(0, len(pixelOrder), blockSize)]
 
-                        totalTraces[(pixelX, pixelY)] = traces
-                        
-                        ## Take a mean average of the traces colors
-                        color = RGB.mean(samples).toTuple('bgr')
-                        
-                        # print(samples)
-                        # print(color)
-                        
-                        ## Random-order pixel comuptation for ease of visualisation
-                        if self.options['progressMode'] == 'circular':
-                            ## Calculate circle radius
-                            percentageComplete = len(renderedPixels)/(len(pixelOrderX)*len(pixelOrderY))
-                            radius = round((self.transformedScene.camera.resolutionHeight/30)*(1-percentageComplete))
-                            
-                            ## Generate empty image and draw circle onto it
-                            circleImage = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
-                            cv2.circle(circleImage, (pixelX, pixelY), radius, color, thickness=-1)
-                            
-                            ## Set color of pixel permanently
-                            renderedPixels[(pixelX, pixelY)] = color
+        renderQueue = Queue()
+        threads = []
+        
+        self.threadsProgress = ThreadsProgress(callback=progressCallback)
 
-                            ## Mask the circle image onto the previous image
-                            alpha = 0.5
-                            mask = circleImage.astype(bool)
-                            image[mask] = cv2.addWeighted(image, alpha, circleImage, 1 - alpha, 0)[mask]
-                            
-                            ## Restore rendered pixels
-                            for pixel in renderedPixels.keys():
-                                image[pixel[1]][pixel[0]] = renderedPixels[pixel]
-                        ## Either step progress or no progress
-                        elif self.options['progressMode'] in ['step', 'none']:
-                            ## Render debug preview
-                            if self.options['debug'] and (rayTrace != None and (-0.06 < rayTrace.collisionInfo['coordinate'].y < 0.06 or pixelY == 0 or True) or (pixel == (0, 0))):
-                                debugImg = debugRenderer.render(traceTrees=traces).imageAs('cv2')
+        for threadId, block in enumerate(blocks):
+            thread = threading.Thread(target=self.renderPixels, args=(block, cancelCallback, threadId, renderQueue))
+            threads.append(thread)
+            thread.start()
+        
+        for thread in threads:
+            thread.join()
+        
+        print('finished rendering')
+        
+        renderResults = []
+        while not renderQueue.empty():
+            renderResult = renderQueue.get()
+            renderResults.append(renderResult)
+        
+        renderResults.sort(key=lambda res: res[0])
+        
+        images = []
+        failed = False
+        totalTraces = {}
+        for renderResult in renderResults:
+            _, image, traces, threadFailed = renderResult
+            images.append(image)
+            totalTraces.update(traces)
+            if threadFailed or failed:
+                failed = True
+            
+        end = time.time()
+        
+        image = self.mergeImgs(images, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight)
+        
 
-                                cv2.imshow('debug', debugImg)
-                                cv2.waitKey(1)
-                            
-                            ## Fill low-resolution pixels
-                            if self.options['fillStep']:
-                                cv2.rectangle(image, (pixelX, pixelY), (pixelX+self.options['step'], pixelY+self.options['step']), color, thickness=-1)
-                            else:
-                                image[pixelY][pixelX] = color
-                        ## If there is a progress mode
-                        if self.options['progressMode'] != 'none':
-                            ## Display image
-                            cv2.imshow('main', image)
-                            if (pixelOrder.index(pixel) == len(pixelOrder)-1) and self.options['wait']:
-                                cv2.waitKey(0)
-                            else:
-                                cv2.waitKey(1)
-                        
-                        bar()
-                    ## Catch keyboard interrupt and finish render, marking failed as True for Rendered object
-                    except KeyboardInterrupt:
-                        print('Safely exiting render')
-                        failed = True
-                        break
+        print('finished merging')
 
         ## Set final Rendered properties and then return
-        end = time.time()
         totalTime = end-start
         rays = self.rays
         self.rays = 0
         
+        print(totalTime)
+        
         return Rendered(image.tolist(), totalTraces, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight, totalTime, rays, self.options, failed=failed, engine='photon')
+    
+    def renderPixels(self, pixelOrder, cancelCallback, id=None, queue=None):
+        self.threadsProgress[id] = [0, len(pixelOrder)]
+        if self.options['debug']:
+            print(f'Thread {id} started')
+        ## Setup image
+        # image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
+        image = np.full((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 4), (0, 0, 0, 0), np.uint8)
+        
+        totalTraces = {}
+        
+        failed = False
+        
+        startTime = time.time()
+
+        for i, pixel in enumerate(pixelOrder):
+            try:
+                pixelX = pixel[0]
+                pixelY = pixel[1]
+                
+                ## Cast first ray
+                pixelVec = self.pixelToVector(pixelX, pixelY)
+                initialRay = self.getRay(pixelVec)
+                
+                ## Trace the initial ray several times for more accurate sampling
+                traces = []
+                samples = []
+                for _ in range(self.options['samples'] if self.options['bounces'] > 1 else 1):
+                    rayTrace = self.trace(initialRay, bounces=self.options['bounces'], lights=self.options['lights'])
+                    self.rays += 1
+                    traces.append(rayTrace)
+                    # if rayTrace != None: print(rayTrace)
+                    samples.append(self.computeColor(rayTrace))
+
+                totalTraces[(pixelX, pixelY)] = traces
+                
+                ## Take a mean average of the traces colors
+                # color = RGB.mean(samples).toTuple('bgr')
+                color = RGB.mean(samples).toTuple('bgra')
+                
+                # print(samples)
+                # print(color)
+                
+                ## Fill low-resolution pixels
+                if self.options['fillStep']:
+                    cv2.rectangle(image, (pixelX, pixelY), (pixelX+self.options['step'], pixelY+self.options['step']), color, thickness=-1)
+                else:
+                    image[pixelY][pixelX] = color
+                
+                self.threadsProgress[id] = [i, len(pixelOrder)]
+                if cancelCallback():
+                    if self.options['debug']:
+                        print('Safely cancelling render')
+                    failed = True
+                    break
+            ## Catch keyboard interrupt and finish render, marking failed as True for Rendered object
+            except KeyboardInterrupt:
+                if self.options['debug']:
+                    print('Safely exiting render')
+                failed = True
+                break
+
+        timeToComplete = time.time()-startTime
+        if self.options['debug']:
+            print(f'Thread {id} done in {timeToComplete:.2f}')
+        queue.put([id, image, totalTraces, failed])
+
+
+# MARK: THREADS PROGRESS
+## Structure to allow tracking of threads progress
+class ThreadsProgress:
+    def __init__(self, callback) -> None:
+        ## Lock prevents race conditions
+        ## Using `with self.lock` will lock the SharedState while the with block is being executed
+        self.lock = threading.Lock()
+        self.callback = callback
+        self.__threadsProgress = {}
+    
+    # MARK: > GET
+    def __getitem__(self, key):
+        with self.lock:
+            ## Return data
+            return self.__threadsProgress[key]
+
+    # MARK: > SET
+    def __setitem__(self, key, value):
+        with self.lock:
+            ## Update data and run callback
+            self.__threadsProgress[key] = value
+            self.callback(self.__threadsProgress, key)
+
 
 # MARK: TEXEL
 ## Simplified rasterisation engine for real-time previews
@@ -1283,7 +1361,7 @@ class Texel:
     # MARK: > ADMIN
     ## Make sure all options exist even when unspecified
     def mergeDefaultOptions(self, options):
-        defaultOptions = {'attenuation': True, 'backCull': True}
+        defaultOptions = {'attenuation': True, 'backCull': True, 'vertices': False, 'edges': False, 'selectedObject': -1, 'normals': False, 'ambient': RGB(0, 0, 0)}
         for optionKey in defaultOptions.keys():
             if optionKey not in options.keys():
                 options[optionKey] = defaultOptions[optionKey]
@@ -1340,8 +1418,8 @@ class Texel:
             photon = Photon(scene=self.transformedScene)
 
         ## Setup image to work on
-        print('zeros:', (self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3))
-        image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
+        # image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
+        image = np.full((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), self.options['ambient'].toTuple('bgr'), dtype=np.uint8)
         
         ## Start timing render
         start = time.time()
@@ -1370,30 +1448,39 @@ class Texel:
                 cv2.circle(image, projectedPoint, screenspaceRadius, shadedColor.toTuple('bgr'), -1)
             elif obj.type == 'mesh':
                 for face in obj.mesh.faces:
-                    ## Apply vertices transform before projecting
-                    # vertices = [
-                    #     obj.mesh.vertices[index].applyTransforms(obj.position, obj.scale, obj.rotation)
-                    #     for index in face
-                    # ]
                     vertices = [
                         obj.mesh.vertices[index]
                         for index in face
                     ]
                     projected = [self.projectVertex(vertex) for vertex in vertices]
-                    ## Make sure all vertices are on the screen / in front of the camera
+                    ## Make sure all vertices are on the screen and in front of the camera
                     if not any([vertex == None for vertex in projected]):
-                        ## Cull any faces facing away
-                        if self.options['backCull']:
-                            center = Mesh.centroid(vertices, [0, 1, 2])
-                            facePlane = photon.getFacePlane(vertices)
-                            if facePlane.normal.dot((self.transformedScene.camera.position - center)) <= 0:
-                                continue
+                        center = Mesh.centroid(vertices, [0, 1, 2])
+                        facePlane = photon.getFacePlane(vertices)
+                        if facePlane.normal.dot((self.transformedScene.camera.position - center)) < 0:
+                            normalDirection = 'away'
+                        else:
+                            normalDirection = 'toward'
 
+                        ## Cull any faces facing away
+                        if self.options['backCull'] and normalDirection == 'away':
+                            continue
+                        
+                        ## Display object color
                         color = obj.shaders[obj.shaderIndices[obj.mesh.faces.index(face)]].color
+
+                        if self.options['normals']:
+                            ## Display red/blue depending on normal direction
+                            if normalDirection == 'away':
+                                color = RGB(230, 0, 0)
+                            elif normalDirection == 'toward':
+                                color = RGB(0, 0, 230)
+
                         shadedColor = color
+
                         if self.options['attenuation']:
                             ## Get attenuation
-                            center = Mesh.centroid(vertices, [0, 1, 2]) # TODO # Use whole face rather than just center
+                            center = Mesh.centroid(vertices, [0, 1, 2])
                             dist = (center - self.transformedScene.camera.position).magnitude()
                             attenuation = photon.getAttenuation(dist)
                             
@@ -1401,12 +1488,21 @@ class Texel:
                             shadedColor = color * attenuation
                         ## Draw face between three vertices
                         cv2.fillPoly(image, np.int32([projected]), shadedColor.toTuple('bgr'))
+                        
+                        if self.options['edges']:
+                            ## Draw edges
+                            lineColor = (0, 0, 0)
+                            ## Make selected object have orange edges
+                            if obj.id == self.options['selectedObject']:
+                                lineColor = (0, 100, 255)
+                            cv2.polylines(image, np.int32([projected]), isClosed=True, color=lineColor, thickness=1)
             
         ## Calculate time to render
         end = time.time()
         totalTime = end-start
         
         return Rendered(image.tolist(), {}, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight, totalTime, [], self.options, failed=False, engine='texel')
+
 
 class Post:
     @staticmethod

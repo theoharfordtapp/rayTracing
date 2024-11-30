@@ -5,12 +5,10 @@
 #
 # (3D Engine)
 #
-# Note: comments with `MARK` in them are purely vscode-related, displaying section headers in the minimap. They have no relevance to the code.
+# NOTE # Comments with `MARK` in them are purely IDE-related. They have no relevance to the code.
 
 # MARK: IMPORTS
-import concurrent.futures
 import math, random
-import numpy as np
 import trimesh
 import json
 import copy
@@ -143,8 +141,13 @@ class Ray:
     def toVec3(self):
         return (self.pointOnRay(1) - self.start).normalise()
     
+    # MARK: > TO DICT
+    ## Convert ray to a dictionary that can be stored for later use
     def toDict(self):
+        ## Convert the current object to a dictionary
         objectDict = self.object.toDict() if self.object else None
+        
+        ## Combine object dict with other information from ray
         return {
             'start': [*self.start],
             'direction': [*self.direction],
@@ -152,9 +155,14 @@ class Ray:
             'object': objectDict,
         }
     
+    # MARK: > FROM DICT
+    ## Convert dictionary back to a ray
     @staticmethod
     def fromDict(data):
+        ## Convert the object data back into an object
         object = Object.fromDict(data.get('object', None)) if data.get('object', None) else None
+        
+        ## Combine object with other information from ray data
         return Ray(
             start=Vec3(*data.get('start', [0, 0, 0])),
             direction=Vec3(*data.get('direction', [0, 0, 0])),
@@ -172,7 +180,7 @@ class Ray:
         planePos = plane.position
         
         ## Simultaneous equation combining two equations: 1) check if collision is on plane, 2) get the distance along a ray for a certain collision
-        ## Calculates what point on the ray would be on the plane
+        ## Calculates what point along the ray would be on the plane
         t = (normal.dot(startPoint) - normal.dot(planePos))/((normal * -1).dot(rayDirection))
         return t
 
@@ -240,7 +248,7 @@ class Ray:
         tEnter = max(tAxis[0] for tAxis in tAxes)
         tExit = min(tAxis[1] for tAxis in tAxes)
         
-        ## Return if the ray enters the box before it exists and that it exits in a positive direction
+        ## Return if the ray enters the box before it exists and if it exits in a positive direction
         return tEnter <= tExit and tExit > 0
 
     # MARK: > POINT
@@ -295,12 +303,17 @@ class TraceTreeNode:
         
         return text
     
+    # MARK: > TO DICT
+    ## Convert trace tree node to a dictionary that can be stored for later use
     def toDict(self):
+        ## Get the dictionary representations of the left and right node
         leftNode = self.left.toDict() if self.left else None
         rightNode = self.right.toDict() if self.right else None
         
+        ## Get the face in integers (rather than np.int64 types)
         face = [int(vertex) for vertex in [*self.collisionInfo['face']]] if self.collisionInfo['face'] != None else None
         
+        ## Get the dictionary representation of the collisionInfo
         collisionInfo = {
             'coordinate': [*self.collisionInfo['coordinate']],
             'object': self.collisionInfo['object'].toDict(),
@@ -309,6 +322,7 @@ class TraceTreeNode:
             'face': face,
         }
         
+        ## Combine the information
         return {
             'ray': self.ray.toDict(),
             'collisionInfo': collisionInfo,
@@ -316,17 +330,23 @@ class TraceTreeNode:
             'right': rightNode,
         }
     
+    # MARK: > FROM DICT
+    ## Convert trace tree node data back into a trace tree node
     @staticmethod
     def fromDict(data):
+        ## Get the left and right node from dictionary data
         leftNode = TraceTreeNode.fromDict(data.get('left', None)) if data.get('left', None) else None
         rightNode = TraceTreeNode.fromDict(data.get('right', None)) if data.get('right', None) else None
         
+        ## Set default ray data in case a ray is not found
         defaultRayData = {
             'start': [0, 0, 0],
             'direction': [0, 0, 0],
         }
+        ## Convert ray data to ray
         ray = Ray.fromDict(data.get('ray', defaultRayData))
         
+        ## Set default collisionInfo data in case the data is not found
         defaultCollisionInfoData = {
             'coordinate': None,
             'object': None,
@@ -334,9 +354,11 @@ class TraceTreeNode:
             'direction': None,
             'face': None,
         }
+        ## Get collisionInfo data
         collisionInfoData = data.get('collisionInfo', defaultCollisionInfoData)
         face = tuple(collisionInfoData['face']) if collisionInfoData['face'] != None else None
         
+        ## Convert collisionInfo data to collisionInfo
         collisionInfo = {
             'coordinate': Vec3(*collisionInfoData['coordinate']),
             'object': Object.fromDict(collisionInfoData['object']),
@@ -386,9 +408,13 @@ class RGB:
     # MARK: > ARITHMETIC
     def __mul__(self, other):
         if type(other) in [int, float]:
+            ## Multiply each component by other
             return RGB(self.r * other, self.g * other, self.b * other)
+        elif type(other) == RGB:
+            ## Multiply component-wise
+            return RGB(self.r * other.r, self.g * other.g, self.b * other.b)
         else:
-            return self
+            raise TypeError(f'Cannot multiply RGB with type {type(other)}')
     
     def __add__(self, other):
         if type(other) == RGB:
@@ -397,8 +423,8 @@ class RGB:
             b = min(self.b + other.b, 255)
             return RGB(r, g, b)
         else:
-            return self
-    
+            raise TypeError(f'Cannot add RGB to type {type(other)}')
+
     # MARK: > TO HEX
     ## Convert to hexadecimal color code
     def toHex(self):
@@ -412,8 +438,12 @@ class RGB:
             return (self.b, self.g, self.r)
         elif space == 'rgb':
             return (self.r, self.g, self.b)
+        elif space == 'bgra':
+            return (self.b, self.g, self.r, 255)
+        elif space == 'rgba':
+            return (self.r, self.g, self.b, 255)
         else:
-            return (self.r, self.g, self.b)
+            raise TypeError(f'Color space {space} not recognised')
     
     # MARK: > MEAN
     ## Get the mean average of multiple colors
@@ -432,14 +462,14 @@ class RGB:
         mean_b = total_b // num_colors
         
         ## Return new RGB with the mean colors
-        return RGB(mean_r, mean_g, mean_b)
+        return RGB(mean_r, mean_g, mean_b).clamp()
 
     # MARK: > CLAMP
     ## Make sure RGB value does not exceed (255, 255, 255)    
     def clamp(self):
-        r = self.r if self.r < 256 else 255
-        g = self.g if self.g < 256 else 255
-        b = self.b if self.b < 256 else 255
+        r = min(self.r, 255)
+        g = min(self.g, 255)
+        b = min(self.b, 255)
         
         return RGB(r, g, b)
 
@@ -534,7 +564,7 @@ class Vec3:
                 self.x * other.y - self.y * other.x
             )
         else:
-            raise TypeError(f'Cannot compute cross product with type {type(other)}')
+            raise TypeError(f'Cannot cross Vec3 against type {type(other)}')
     
     # MARK: > TRANSFORM
     ## Apply the given transforms, returning a new vector
@@ -595,6 +625,7 @@ class Vec3:
         return math.acos(dotProd/magnitudesProd)
 
     # MARK: > FLIP
+    ## Flip a vector over another vector
     def flipComponent(self, direction):
         if type(direction) != Vec3:
             raise TypeError(f'Cannot flip Vec3 across type {type(direction)}')
@@ -618,6 +649,16 @@ class Scene:
         self.objects = []
         self.camera = None
     
+    # MARK: > GET OBJ
+    ## Get an object given its id
+    def getObject(self, id):
+        for obj in self.objects:
+            if obj.id == id:
+                return obj
+        
+        ## No object found
+        return None
+    
     # MARK: > TO DICT
     ## Convert scene data to dict to save
     def toDict(self):
@@ -633,39 +674,56 @@ class Scene:
     ## Load scene data from dict
     @staticmethod
     def fromDict(data):
+        ## Create an empty scene to add all of the scene data to
         scene = Scene()
 
+        ## Create the camera
         cameraData = data.get('camera', {})
         camera = Camera.fromDict(cameraData)
         
+        ## Set the camera to be in the given scene
         camera.scene = scene
         camera.id = cameraData.get('id', 0)
         
+        ## Bind the camera
         scene.camera = camera
         
         for obj in data.get('objects', []):
+            ## Create a new object
             object = Object.fromDict(obj)
             
+            ## Add it to the scene
             scene.objects.append(object)
 
+            ## If it is the currently bound camera, then ignore it (as it has already been set)
             if object == scene.camera:
                 continue
 
+            ## Set the object to be in the given scene
             object.scene = scene
             object.id = obj.get('id', len(scene.objects))
         
         return scene
 
+    # MARK > SAVE JSON
+    ## Save the scene data to a JSON file
     def saveJSON(self, filepath):
+        ## Get the dictionary representation of the scene
         data = self.toDict()
+        
+        ## Dump the data into JSON
         with open(filepath, 'w') as f:
             json.dump(data, f)
     
+    # MARK > FROM JSON
+    ## Create a scene from a JSON file
     @staticmethod
     def fromJSON(filepath):
+        ## Load the data from JSON
         with open(filepath, 'r') as f:
             data = json.load(f)
         
+        ## Convert the dictionary data into a scene
         return Scene.fromDict(data)
 
 # MARK: SHADER
@@ -679,7 +737,7 @@ class Shader:
         self.emissionStrength = emissionStrength
     
     # MARK: > TO DICT
-    ## Convert shader data to dict to save
+    ## Convert shader data to dictionary to save
     def toDict(self):
         return {
             'debugColor': [*self.debugColor],
@@ -690,7 +748,7 @@ class Shader:
         }
 
     # MARK: > FROM DICT
-    ## Get dict data and convert into shader object
+    ## Get dictionary data and convert to shader
     @staticmethod
     def fromDict(data):
         return Shader(
@@ -701,8 +759,9 @@ class Shader:
             emissionStrength=data.get('emissionStrength', 0),
         )
 
+    # MARK: > REPR
     def __repr__(self) -> str:
-        return f'debugColor: {self.debugColor}\ncolor: {self.color}\nroughness: {self.roughness}\nshininess: {self.shininess}\nreflectivity: {self.reflectivity}\nemissionStrength: {self.emissionStrength}\n'
+        return f'debugColor: {self.debugColor}\ncolor: {self.color}\nroughness: {self.roughness}\nreflectivity: {self.reflectivity}\nemissionStrength: {self.emissionStrength}\n'
 
 # MARK: MATERIAL
 ## Matierial structure providing information about an object's internal properties
@@ -711,14 +770,14 @@ class Material:
         self.ior = ior
     
     # MARK: > TO DICT
-    ## Convert material data to dict to save
+    ## Convert material data to dictionary to save
     def toDict(self):
         return {
             'ior': self.ior,
         }    
 
     # MARK: > FROM DICT
-    ## Get dict data and convert into material object
+    ## Get dictionary data and convert to material
     @staticmethod
     def fromDict(data):
         return Material(
@@ -734,53 +793,72 @@ class Mesh:
         self.faces = faces
 
     # MARK: > FROM STL
-    ## Convert STL to a mesh object
+    ## Convert STL to a mesh
     @staticmethod
     def fromSTL(filename):
         ## Use trimesh to load the mesh data
         mesh = trimesh.load_mesh(filename, enable_post_processing=True, solid=True)
 
+        ## Vertices must be rearranged so that the y coordinate corresponds to height
+        ## Faces should be converted to tuples
         vertices = [Vec3(float(vertex[0]), float(vertex[2]), float(vertex[1])) for vertex in mesh.vertices]
-        faces = [tuple(face) for face in mesh.faces]
+        faces = [tuple(face[::-1]) for face in mesh.faces]
         
+        ## Create a new mesh from mesh data
         newMesh = Mesh(vertices, faces)
-        newMesh.flipNormals()
         
         return newMesh
 
+    # MARK: > CENTROID
+    ## Get the centroid (center coordinate) of three vertices
     @staticmethod
     def centroid(vertices, face):
+        ## Get the vertex coordinates from the face made up of vertex indices
         v0, v1, v2 = [vertices[vertex] for vertex in face]
+
+        ## Calculate mean of each component to get centroid
         centroid = Vec3(
             (v0.x + v1.x + v2.x) / 3,
             (v0.y + v1.y + v2.y) / 3,
             (v0.z + v1.z + v2.z) / 3
         )
+
         return centroid
 
+    # MARK: > REPR
     def __repr__(self):
+        ## Create empty return string
         returnString = ''
         
+        ## Add all the vertices
         for vertex in self.vertices:
             returnString += str(vertex) + '\n'
         
         returnString += '\n'
         
+        ## Add all the faces
         for face in self.faces:
             returnString += str(face) + '\n'
             
         return returnString
     
+    # MARK: > FLIP NORMALS
+    ## Flip the normals of a mesh
     def flipNormals(self):
+        ## Reverse order of all faces so that they go anticlockwise
         for i, face in enumerate(self.faces):
             self.faces[i] = face[::-1]
     
+    # MARK: > TO DICT
+    ## Convert mesh to dictionary data to store for later use
     def toDict(self):
         return {
             'vertices': [[*vec] for vec in self.vertices],
             'faces': [[int(vertex) for vertex in face] for face in self.faces],
         }
 
+    # MARK: > FROM DICT
+    ## Convert dictionary data back to a mesh
     @staticmethod
     def fromDict(data):
         return Mesh(
@@ -788,13 +866,20 @@ class Mesh:
             faces=[tuple([int(vertex) for vertex in face]) for face in data.get('faces', [])],
         )
 
+
+# MARK: SCALE
+## Scale structure representing a 3-dimensional scale factor
 class Scale:
     def __init__(self, x, y, z) -> None:
         self.x = x
         self.y = y
         self.z = z
     
-    ## MARK: > REPR
+    # MARK: > ADMIN
+    def __iter__(self) -> iter:
+        return iter([self.x, self.y, self.z])
+    
+    # MARK: > REPR
     def __repr__(self) -> str:
         return f'❰{self.x}, {self.y}, {self.z}❱'
     
@@ -806,6 +891,7 @@ class Scale:
         
         return f'❰{formattedX}, {formattedY}, {formattedZ}❱'
     
+    # MARK: > ARITHMETIC
     def __truediv__(self, other):
         if type(other) in [float, int]:
             return Scale(self.x/other, self.y/other, self.z/other)
@@ -819,11 +905,10 @@ class Scale:
             return Scale(self.x * other.x, self.y * other.y, self.z * other.z)
         else:
             raise TypeError(f'Cannot multiply Scale with type {type(other)}')
-    
-    def __iter__(self) -> iter:
-        return iter([self.x, self.y, self.z])
 
 
+# MARK: BVHNODE
+## Node of a Bounding Volume Hierarchy structure
 class BVHNode:
     def __init__(self, box=(None, None), left=None, right=None, faces=None):
         self.box = box
@@ -831,31 +916,37 @@ class BVHNode:
         self.right = right
         self.faces = faces
 
+    # MARK: > MERGE
+    ## Merge two BVH Nodes together
     def merge(self, other):
+        ## Take the minimum of each component
         new_min = Vec3(
             min(self.box[0].x, other.box[0].x),
             min(self.box[0].y, other.box[0].y),
             min(self.box[0].z, other.box[0].z)
         )
+        ## Take the maximum of each component
         new_max = Vec3(
             max(self.box[1].x, other.box[1].x),
             max(self.box[1].y, other.box[1].y),
             max(self.box[1].z, other.box[1].z)
         )
+
         return (new_min, new_max)
     
+    # MARK: > REPR
     def __repr__(self) -> str:
         return f'[{self.box[0]}, {self.box[1]}], {self.left}, {self.right}, {self.faces[:4] if self.faces else "not a leaf"}\n'
 
+    # MARK: > TO DICT
+    ## Convert BVHNode to dictionary data to save and store for later use
     def toDict(self):
+        ## Make sure faces are in int, not np.int64, if faces exist
         faces = [[int(vertex) for vertex in face] for face in self.faces] if self.faces != None else None
         
-        leftNode = None
-        rightNode = None
-        if self.left:
-            leftNode = self.left.toDict()
-        if self.right:
-            rightNode = self.right.toDict()
+        ## Get dictionary representation of left and right nodes
+        leftNode = self.left.toDict() if self.left else None
+        rightNode = self.right.toDict() if self.right else None
 
         return {
             'box': [[*vec] if vec != None else None for vec in self.box],
@@ -866,6 +957,8 @@ class BVHNode:
             'faces': faces,
         }
     
+    # MARK: > FROM DICT
+    ## Convert dictionary data to BVHNode
     @staticmethod
     def fromDict(data):
         loadedLeft = data.get('left', {})
@@ -1038,7 +1131,7 @@ class Object:
 
     def boundingBox(self, faces=None):
         if self.type == 'mesh':
-            if faces == None: faces = self.mesh.faces
+            if faces == None: faces = copy.deepcopy(self.mesh.faces)
             vertices = [self.mesh.vertices[vertex] for face in faces for vertex in face]
             transformedVertices = [
                 vertex.applyTransforms(self.position, self.scale, self.rotation) for vertex in vertices
@@ -1064,17 +1157,15 @@ class Object:
             return None
 
     
-    def buildBVH(self, faces=None, depth=0, maxTrianglesPerLeaf=8, maxDepthForThreads=10, maxDepth=100):
-        # print(depth)
+    def buildBVH(self, faces=None, depth=0, maxTrianglesPerLeaf=8, maxDepth=100):
         if self.type in ['sphere', 'light', 'empty', 'camera']:
             return BVHNode(box=self.boundingBox())
         
-        if faces == None: faces = self.mesh.faces
+        if faces == None: faces = copy.deepcopy(self.mesh.faces)
 
         box = self.boundingBox(faces)
 
         diffs = [abs(box[0][axis]-box[1][axis]) for axis in range(3)]
-        # print(diffs)
 
         if len(faces) <= maxTrianglesPerLeaf or any(diff <= 0.0006 for diff in diffs) or depth >= maxDepth:
             return BVHNode(box=box, faces=faces)
@@ -1087,25 +1178,10 @@ class Object:
         leftFaces = faces[:mid]
         rightFaces = faces[mid:]
 
-        # if depth == 0: start = time.time()
-        if depth > maxDepthForThreads:
-            leftNode = self.buildBVH(leftFaces, depth + 1, maxTrianglesPerLeaf)
-            rightNode = self.buildBVH(rightFaces, depth + 1, maxTrianglesPerLeaf)
-        else:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                leftFuture = executor.submit(self.buildBVH, leftFaces, depth + 1, maxTrianglesPerLeaf, maxDepthForThreads, maxDepth)
-                rightFuture = executor.submit(self.buildBVH, rightFaces, depth + 1, maxTrianglesPerLeaf, maxDepthForThreads, maxDepth)
-
-                leftNode = leftFuture.result()
-                rightNode = rightFuture.result()
+        leftNode = self.buildBVH(leftFaces, depth+1, maxTrianglesPerLeaf, maxDepth)
+        rightNode = self.buildBVH(rightFaces, depth+1, maxTrianglesPerLeaf, maxDepth)
 
         boundingBox = leftNode.merge(rightNode)
-        # if depth == 0:
-        #     end = time.time()
-        #     totalTime = end-start
-        #     print(f'{totalTime:.2f}')
-        
-        # print(leftNode, rightNode)
         
         return BVHNode(box=boundingBox, left=leftNode, right=rightNode)
 
