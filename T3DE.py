@@ -961,12 +961,16 @@ class BVHNode:
     ## Convert dictionary data to BVHNode
     @staticmethod
     def fromDict(data):
-        loadedLeft = data.get('left', {})
-        if loadedLeft != None:
-            loadedLeft = BVHNode.fromDict(loadedLeft)
-        loadedRight = data.get('right', {})
-        if loadedRight != None:
-            loadedRight = BVHNode.fromDict(loadedRight)
+        try:
+            loadedLeft = data.get('left', {})
+            if loadedLeft != None:
+                loadedLeft = BVHNode.fromDict(loadedLeft)
+            loadedRight = data.get('right', {})
+            if loadedRight != None:
+                loadedRight = BVHNode.fromDict(loadedRight)
+        except RecursionError:
+            loadedLeft = BVHNode()
+            loadedRight = BVHNode()
 
         return BVHNode(
             box=[Vec3(*vec) if vec != None else None for vec in data.get('box', [None, None])],
