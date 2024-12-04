@@ -33,10 +33,7 @@ class NoBoundCameraError(Exception):
 ## Essentially an image, but with extra information about how it was rendered
 class Rendered:
     def __init__(self, imgData, traces, width, height, time=None, rays=None, options=None, failed=False, engine=None):
-        self.imgData = [
-            [(pix[2], pix[1], pix[0]) for pix in row]
-            for row in imgData
-        ] ## Convert BGR to RGB
+        self.imgData = np.flip(imgData, 2) ## Convert BGR to RGB
         self.traces = traces
         self.width = width
         self.height = height
@@ -50,14 +47,11 @@ class Rendered:
     def imageAs(self, type):
         match type:
             case 'list':
-                return self.imgData
+                return self.imgData.toList()
             case 'cv2': ## Convert RGB to BGR
-                return np.array([
-                    [(pix[2], pix[1], pix[0]) for pix in row]
-                    for row in self.imgData
-                ]).astype(np.uint8)
+                return np.flip(self.imgData, 2)
             case 'np':
-                return np.array(self.imgData).astype(np.uint8)
+                return self.imgData
     
     def toDict(self):
         options = self.options
@@ -229,10 +223,10 @@ class Debug:
 
         ## Get image plane vertices
         vertices = [
-            (Vec3(0, 0, camera.length) - Vec3(camera.width / 2, 0, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
-            (Vec3(0, 0, camera.length) + Vec3(camera.width / 2, 0, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
-            (Vec3(0, 0, camera.length) - Vec3(0, 0.5, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
-            (Vec3(0, 0, camera.length) + Vec3(0, 0.5, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
+            (Vec3(0, 0, camera.length/20) - Vec3((self.options['width']/self.options['height']) / 2, 0, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
+            (Vec3(0, 0, camera.length/20) + Vec3((self.options['width']/self.options['height']) / 2, 0, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
+            (Vec3(0, 0, camera.length/20) - Vec3(0, 0.5, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
+            (Vec3(0, 0, camera.length/20) + Vec3(0, 0.5, 0)).applyTransforms(camera.position, camera.scale, camera.rotation),
         ]
 
         for vertex in vertices:
@@ -427,8 +421,8 @@ class Debug:
                 self.renderTraceNode(image, traceTree, halfWidth, halfHeight, (0, 80, 200))
         
         ## Convert image data to Rendered and return
-        imageList = [row[::-1] for row in image.tolist()]
-        return Rendered(imageList, {}, self.options['width'], self.options['height'], options=self.options, failed=False, engine='debug')
+        # imageList = [row[::-1] for row in image.tolist()] ## FLIP COLORS?
+        return Rendered(image, {}, self.options['width'], self.options['height'], options=self.options, failed=False, engine='debug')
     
     # MARK: > WRITE INFO
     ## Write trace info onto image
@@ -480,7 +474,7 @@ class Debug:
                 ## Find the correct 'pixel' according to how many actual pixels there are per 'pixel'
                 if rendered.traces != {}:
                     for (px, py) in rendered.traces.keys():
-                        if px <= x < px + rendered.options['step'] and py <= y < py + rendered.options['step']:
+                        if px <= x < px + rendered.options['step'] and py <= y < py + rendered.options['step']: # TODO # Sort this out
                             traces = rendered.traces[(px, py)]
                             break
                 else:
@@ -529,7 +523,7 @@ class Photon:
     # MARK: > ADMIN
     ## Make sure all options exist even when unspecified
     def mergeDefaultOptions(self, options):
-        defaultOptions = {'debug': False, 'step': 1, 'fillStep': True, 'progressMode': 'step', 'bounces': 1, 'wait': True, 'samples': 1, 'ambient': RGB(20, 20, 20), 'bvh': True, 'debugOptions': {}, 'aabb': True, 'bvh': True, 'lights': True, 'debug': False, 'emissionSampleDensity': 4, 'transformBefore': True, 'threads': 4}
+        defaultOptions = {'debug': False, 'showProgress': True, 'bounces': 1, 'wait': True, 'samples': 1, 'ambient': RGB(20, 20, 20), 'bvh': True, 'debugOptions': {}, 'aabb': True, 'bvh': True, 'lights': True, 'debug': False, 'emissionSampleDensity': 4, 'transformBefore': True, 'threads': 4, 'width': 1440, 'height': 900}
         for optionKey in defaultOptions.keys():
             if optionKey not in options.keys():
                 options[optionKey] = defaultOptions[optionKey]
@@ -542,14 +536,14 @@ class Photon:
         camera = self.transformedScene.camera
         
         # ## Correct flipped image
-        # pixelX = camera.resolutionWidth-pixelX
+        # pixelX = self.options['width']-pixelX
 
         ## Get pixel position untransformed
-        pixelLocalX = ((pixelX/camera.resolutionWidth) * camera.width) - (camera.width/2)
-        pixelLocalY = 0.5 - (pixelY/camera.resolutionHeight)
+        pixelLocalX = ((pixelX/self.options['width']) * (self.options['width']/self.options['height'])) - ((self.options['width']/self.options['height'])/2)
+        pixelLocalY = 0.5 - (pixelY/self.options['height'])
         
         ## Transform position
-        pixelAbsoluteVec = Vec3(pixelLocalX, pixelLocalY, camera.length).applyTransforms(camera.position, camera.scale, camera.rotation)
+        pixelAbsoluteVec = Vec3(pixelLocalX, pixelLocalY, camera.length/20).applyTransforms(camera.position, camera.scale, camera.rotation)
         
         return pixelAbsoluteVec
     
@@ -1151,21 +1145,33 @@ color: {color}\n\n''')
     
     # MARK: > MERGE IMGS
     ## Merge images using mask
-    def mergeImgs(self, imgs, resWidth, resHeight):
-        ## Setup the empty final image
-        totalImg = np.zeros((resHeight, resWidth, 4), np.uint8)
+    # def mergeImgs(self, imgs, resWidth, resHeight):
+    #     ## Setup the empty final image
+    #     totalImg = np.zeros((resHeight, resWidth, 4), np.uint8)
 
-        ## Iterate images
-        for img in imgs:
-            mask = img[..., 3] == 255
+    #     ## Iterate images
+    #     for img in imgs:
+    #         mask = img[..., 3] == 255
 
-            totalImg = np.where(mask[..., None], img, totalImg)
+    #         totalImg = np.where(mask[..., None], img, totalImg)
         
-        return totalImg
+    #     return totalImg
+    
+    def mergeImgs(self, stripes):
+        # img = stripes[0]
+        # stripes = stripes[1:]
+        
+        # for stripe in stripes:
+        #     img = np.concatenate((img, stripe))
+        
+        img = np.vstack(stripes)
+        # img = np.concatenate(stripes, axis=0)
+        
+        return img
     
     # MARK: > RENDER
     ## Create a Rendered object based on the scene properties and data
-    def render(self, progressCallback=lambda _, __: None, cancelCallback=lambda: False) -> Rendered:
+    def render(self, progressCallback=lambda _, __, ___: None, cancelCallback=lambda: False) -> Rendered:
         print('beginning setup')
         
         ## Copy the scene so object transforms can be applied without repercussions
@@ -1174,10 +1180,6 @@ color: {color}\n\n''')
         ## Check bound camera exists
         if not self.transformedScene.camera:
             raise NoBoundCameraError()
-        
-        ## Create assisting debug renderer
-        if self.options['debug']:
-            debugRenderer = Debug(scene=self.transformedScene, options=self.options['debugOptions'])
         
         if self.options['transformBefore']:
             ## Set transforms (optimisation - set them at the start instead of applying them for every calculation)
@@ -1194,30 +1196,41 @@ color: {color}\n\n''')
 
             print('built BVHs')
 
-        ## Generate the pixels to render based on render modes and resolution
-        pixelOrderX = list(range(0, self.transformedScene.camera.resolutionWidth, (self.options['step'])))
-        pixelOrderY = list(range(0, self.transformedScene.camera.resolutionHeight, (self.options['step'])))
-        pixelOrder = []
+        ## TODO # Use a start and end row index depending on threads
+        ## TODO # Merge with blocks as pixelOrder is unnecessary without step
+        if self.options['height'] % self.options['threads'] != 0:
+            raise ValueError('Number of threads must be a factor of image height')
+        
+        blockSize = self.options['height'] // self.options['threads']
+        # ## Generate the pixels to render based on render modes and resolution
+        # pixelOrderX = list(range(0, self.options['width'], (self.options['step'])))
+        # pixelOrderY = list(range(0, self.options['height'], (self.options['step'])))
+        # pixelOrder = []
 
-        for i in pixelOrderX:
-            for j in pixelOrderY:
-                pixelOrder.append((i, j))
+        # for i in pixelOrderX:
+        #     for j in pixelOrderY:
+        #         pixelOrder.append((i, j))
 
         ## Store information for Rendered object later
         totalTraces = {}
         self.rays = 0
         start = time.time()
 
-        blockSize = math.ceil(len(pixelOrder)/self.options['threads'])
-        blocks = [pixelOrder[i:i+blockSize] for i in range(0, len(pixelOrder), blockSize)]
+        ## TODO # This can go with new pixel order system
+        # blockSize = math.ceil(len(pixelOrder)/self.options['threads'])
+        # blocks = [pixelOrder[i:i+blockSize] for i in range(0, len(pixelOrder), blockSize)]
 
         renderQueue = Queue()
         threads = []
         
-        self.threadsProgress = ThreadsProgress(callback=progressCallback)
+        self.threadsProgress = ThreadsProgress(callback=progressCallback, total=blockSize*self.options['width'])
 
-        for threadId, block in enumerate(blocks):
-            thread = threading.Thread(target=self.renderPixels, args=(block, cancelCallback, threadId, renderQueue))
+        # for threadId, block in enumerate(blocks):
+        #     thread = threading.Thread(target=self.renderPixels, args=(block, cancelCallback, threadId, renderQueue))
+        #     threads.append(thread)
+        #     thread.start()
+        for threadId in range(self.options['threads']):
+            thread = threading.Thread(target=self.renderPixels, args=(blockSize, cancelCallback, threadId, renderQueue))
             threads.append(thread)
             thread.start()
         
@@ -1233,20 +1246,20 @@ color: {color}\n\n''')
         
         renderResults.sort(key=lambda res: res[0])
         
-        images = []
+        stripes = []
         failed = False
         totalTraces = {}
         for renderResult in renderResults:
-            _, image, traces, threadFailed = renderResult
-            images.append(image)
+            _, stripe, traces, threadFailed = renderResult
+            stripes.append(stripe)
             totalTraces.update(traces)
             if threadFailed or failed:
                 failed = True
             
         end = time.time()
         
-        image = self.mergeImgs(images, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight)
-        
+        # image = self.mergeImgs(images, self.options['width'], self.options['height'])
+        image = self.mergeImgs(stripes)
 
         print('finished merging')
 
@@ -1257,15 +1270,16 @@ color: {color}\n\n''')
         
         print(totalTime)
         
-        return Rendered(image.tolist(), totalTraces, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight, totalTime, rays, self.options, failed=failed, engine='photon')
+        return Rendered(image, totalTraces, self.options['width'], self.options['height'], totalTime, rays, self.options, failed=failed, engine='photon')
     
-    def renderPixels(self, pixelOrder, cancelCallback, id=None, queue=None):
-        self.threadsProgress[id] = [0, len(pixelOrder)]
-        if self.options['debug']:
-            print(f'Thread {id} started')
+    # def renderPixels(self, pixelOrder, cancelCallback, id=None, queue=None):
+    def renderPixels(self, blockSize, cancelCallback, id=None, queue=None):
+        self.threadsProgress[id] = 0
+        # if self.options['debug']:
+        # print(f'Thread {id} started')
         ## Setup image
-        # image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
-        image = np.full((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 4), (0, 0, 0, 0), np.uint8)
+        # image = np.zeros((self.options['height'], self.options['width'], 3), np.uint8)
+        stripe = np.zeros((blockSize, self.options['width'], 3), np.uint8)
         
         totalTraces = {}
         
@@ -1273,66 +1287,66 @@ color: {color}\n\n''')
         
         startTime = time.time()
 
-        for i, pixel in enumerate(pixelOrder):
-            try:
-                pixelX = pixel[0]
-                pixelY = pixel[1]
-                
-                ## Cast first ray
-                pixelVec = self.pixelToVector(pixelX, pixelY)
-                initialRay = self.getRay(pixelVec)
-                
-                ## Trace the initial ray several times for more accurate sampling
-                traces = []
-                samples = []
-                for _ in range(self.options['samples'] if self.options['bounces'] > 1 else 1):
-                    rayTrace = self.trace(initialRay, bounces=self.options['bounces'], lights=self.options['lights'])
-                    self.rays += 1
-                    traces.append(rayTrace)
-                    # if rayTrace != None: print(rayTrace)
-                    samples.append(self.computeColor(rayTrace))
+        startRow = id*blockSize
 
-                totalTraces[(pixelX, pixelY)] = traces
-                
-                ## Take a mean average of the traces colors
-                # color = RGB.mean(samples).toTuple('bgr')
-                color = RGB.mean(samples).toTuple('bgra')
-                
-                # print(samples)
-                # print(color)
-                
-                ## Fill low-resolution pixels
-                if self.options['fillStep']:
-                    cv2.rectangle(image, (pixelX, pixelY), (pixelX+self.options['step'], pixelY+self.options['step']), color, thickness=-1)
-                else:
-                    image[pixelY][pixelX] = color
-                
-                self.threadsProgress[id] = [i, len(pixelOrder)]
-                if cancelCallback():
+        for pixelY in range(blockSize):
+            for pixelX in range(self.options['width']):
+                try:
+                    ## Cast first ray
+                    pixelVec = self.pixelToVector(pixelX, startRow+pixelY)
+                    initialRay = self.getRay(pixelVec)
+                    
+                    ## Trace the initial ray several times for more accurate sampling
+                    traces = []
+                    samples = []
+                    for _ in range(self.options['samples'] if self.options['bounces'] > 1 else 1):
+                        rayTrace = self.trace(initialRay, bounces=self.options['bounces'], lights=self.options['lights'])
+                        self.rays += 1
+                        traces.append(rayTrace)
+                        # if rayTrace != None: print(rayTrace)
+                        samples.append(self.computeColor(rayTrace))
+
+                    totalTraces[(pixelX, startRow+pixelY)] = traces
+                    
+                    ## Take a mean average of the traces colors
+                    # color = RGB.mean(samples).toTuple('bgr')
+                    color = RGB.mean(samples).toTuple('bgr')
+                    
+                    # print(samples)
+                    # print(color)
+                    
+                    stripe[pixelY][pixelX] = color
+                    
+                    rowsCompleted = pixelY-startRow
+                    progress = pixelX + (rowsCompleted*self.options['width'])
+                    self.threadsProgress[id] = progress
+
+                    if cancelCallback():
+                        if self.options['debug']:
+                            print('Safely cancelling render')
+                        failed = True
+                        break
+                ## Catch keyboard interrupt and finish render, marking failed as True for Rendered object
+                except KeyboardInterrupt:
                     if self.options['debug']:
-                        print('Safely cancelling render')
+                        print('Safely exiting render')
                     failed = True
                     break
-            ## Catch keyboard interrupt and finish render, marking failed as True for Rendered object
-            except KeyboardInterrupt:
-                if self.options['debug']:
-                    print('Safely exiting render')
-                failed = True
-                break
 
         timeToComplete = time.time()-startTime
-        if self.options['debug']:
-            print(f'Thread {id} done in {timeToComplete:.2f}')
-        queue.put([id, image, totalTraces, failed])
+        # if self.options['debug']:
+        # print(f'Thread {id} done in {timeToComplete:.2f}')
+        queue.put([id, stripe, totalTraces, failed])
 
 
 # MARK: THREADS PROGRESS
 ## Structure to allow tracking of threads progress
-class ThreadsProgress:
-    def __init__(self, callback) -> None:
+class ThreadsProgress: ## TODO # return just one total size, not all
+    def __init__(self, callback, total) -> None:
         ## Lock prevents race conditions
         ## Using `with self.lock` will lock the SharedState while the with block is being executed
         self.lock = threading.Lock()
+        self.total = total
         self.callback = callback
         self.__threadsProgress = {}
     
@@ -1347,7 +1361,7 @@ class ThreadsProgress:
         with self.lock:
             ## Update data and run callback
             self.__threadsProgress[key] = value
-            self.callback(self.__threadsProgress, key)
+            self.callback(self.__threadsProgress, key, self.total)
 
 
 # MARK: TEXEL
@@ -1361,7 +1375,7 @@ class Texel:
     # MARK: > ADMIN
     ## Make sure all options exist even when unspecified
     def mergeDefaultOptions(self, options):
-        defaultOptions = {'attenuation': True, 'backCull': True, 'vertices': False, 'edges': False, 'selectedObject': -1, 'normals': False, 'ambient': RGB(0, 0, 0)}
+        defaultOptions = {'attenuation': True, 'backCull': True, 'vertices': False, 'edges': False, 'selectedObject': -1, 'normals': False, 'ambient': RGB(0, 0, 0), 'width': 1440, 'height': 900}
         for optionKey in defaultOptions.keys():
             if optionKey not in options.keys():
                 options[optionKey] = defaultOptions[optionKey]
@@ -1381,17 +1395,17 @@ class Texel:
             return None
         
         ## Project the vertex onto the screen space
-        scaleFac = camera.length / transformedVertex.z
+        scaleFac = (camera.length/20) / transformedVertex.z
         vecX = transformedVertex.x * scaleFac
         vecY = transformedVertex.y * scaleFac
         
         ## Convert vertex vector into pixel coordinates using screen width
-        halfWidth = camera.width / 2
-        pixelX = ((halfWidth + vecX)/camera.width) * camera.resolutionWidth
-        pixelY = (0.5 - vecY) * camera.resolutionHeight
+        halfWidth = (self.options['width']/self.options['height']) / 2
+        pixelX = ((halfWidth + vecX)/(self.options['width']/self.options['height'])) * self.options['width']
+        pixelY = (0.5 - vecY) * self.options['height']
         
         ## Only return if pixel is actually on the desired image
-        if pixelX > camera.resolutionWidth or pixelX < 0 or pixelY > camera.resolutionHeight or pixelY < 0:
+        if pixelX > self.options['width'] or pixelX < 0 or pixelY > self.options['height'] or pixelY < 0:
             return None
         
         return (int(pixelX), int(pixelY))
@@ -1418,34 +1432,39 @@ class Texel:
             photon = Photon(scene=self.transformedScene)
 
         ## Setup image to work on
-        # image = np.zeros((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), np.uint8)
-        image = np.full((self.transformedScene.camera.resolutionHeight, self.transformedScene.camera.resolutionWidth, 3), self.options['ambient'].toTuple('bgr'), dtype=np.uint8)
+        # image = np.zeros((self.options['height'], self.options['width'], 3), np.uint8)
+        image = np.full((self.options['height'], self.options['width'], 3), self.options['ambient'].toTuple('bgr'), dtype=np.uint8)
         
         ## Start timing render
         start = time.time()
 
         for obj in self.transformedScene.objects:
+            if obj == self.transformedScene.camera and self.options['selectedObject'] == obj.id and self.options['edges']:
+                cv2.rectangle(image, (0, 0), (self.options['width']-1, self.options['height']-1), (0, 100, 255), 3)
             if obj.type == 'sphere':
                 ## Project 3D vector to screenspace point
                 projectedPoint = self.projectVertex(obj.position)
                 
-                ## Calculate a screenspace radius by projecting a circumference point
-                projectedCircumferencePoint = self.projectVertex(obj.position + Vec3(obj.scale.x/2, 0, 0))
-                dx = abs(projectedCircumferencePoint[0] - projectedPoint[0])
-                dy = abs(projectedCircumferencePoint[1] - projectedPoint[1])
-                screenspaceRadius = round(math.sqrt(dx**2 + dy**2))
-                
-                color = obj.shaders[0].color
-                shadedColor = color
-                if self.options['attenuation']:
-                    ## Get attenuation
-                    dist = (obj.position - self.transformedScene.camera.position).magnitude()
-                    attenuation = photon.getAttenuation(dist)
+                if projectedPoint:
+                    ## Calculate a screenspace radius by projecting a circumference point
+                    projectedCircumferencePoint = self.projectVertex(obj.position + Vec3(obj.scale.x/2, 0, 0))
                     
-                    ## Get shaded color
-                    shadedColor = color * attenuation
-                
-                cv2.circle(image, projectedPoint, screenspaceRadius, shadedColor.toTuple('bgr'), -1)
+                    if projectedCircumferencePoint:
+                        dx = abs(projectedCircumferencePoint[0] - projectedPoint[0])
+                        dy = abs(projectedCircumferencePoint[1] - projectedPoint[1])
+                        screenspaceRadius = round(math.sqrt(dx**2 + dy**2))
+                        
+                        color = obj.shaders[0].color
+                        shadedColor = color
+                        if self.options['attenuation']:
+                            ## Get attenuation
+                            dist = (obj.position - self.transformedScene.camera.position).magnitude()
+                            attenuation = photon.getAttenuation(dist)
+                            
+                            ## Get shaded color
+                            shadedColor = color * attenuation
+                        
+                        cv2.circle(image, projectedPoint, screenspaceRadius, shadedColor.toTuple('bgr'), -1)
             elif obj.type == 'mesh':
                 for face in obj.mesh.faces:
                     vertices = [
@@ -1496,12 +1515,21 @@ class Texel:
                             if obj.id == self.options['selectedObject']:
                                 lineColor = (0, 100, 255)
                             cv2.polylines(image, np.int32([projected]), isClosed=True, color=lineColor, thickness=1)
+                        
+                        if self.options['vertices']:
+                            ## Draw vertices
+                            vertexColor = (0, 0, 0)
+                            ## Make selected object have orange vertices
+                            if obj.id == self.options['selectedObject']:
+                                vertexColor = (0, 100, 255)
+                            for vertex in projected:
+                                cv2.circle(image, vertex, 1, color=vertexColor, thickness=-1)
             
         ## Calculate time to render
         end = time.time()
         totalTime = end-start
         
-        return Rendered(image.tolist(), {}, self.transformedScene.camera.resolutionWidth, self.transformedScene.camera.resolutionHeight, totalTime, [], self.options, failed=False, engine='texel')
+        return Rendered(image, {}, self.options['width'], self.options['height'], totalTime, [], self.options, failed=False, engine='texel')
 
 
 class Post:
@@ -1553,6 +1581,21 @@ class Post:
         newRendered['imgData'] = decompressedData
 
         return newRendered
+    
+    @staticmethod
+    def upscale(imageData, factor):
+        height, width, depth = imageData.shape
+        
+        newImageData = np.zeros((height*factor, width*factor, depth), np.uint8)
+        
+        for row in range(height):
+            for col in range(width):
+                pixel = imageData[row][col]
+                for i in range(factor):
+                    for j in range(factor):
+                        newImageData[row * factor + i][col * factor + j] = pixel
+        
+        return newImageData
     
     @staticmethod
     def denoise(imageData, kernelSize):

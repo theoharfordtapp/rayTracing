@@ -8,14 +8,15 @@
 # NOTE # Comments with `MARK` in them are purely IDE-related. They have no relevance to the code.
 
 # MARK: IMPORTS
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QFileDialog, QLineEdit, QTabWidget, QSizePolicy, QProgressDialog, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QFileDialog, QLineEdit, QTabWidget, QSizePolicy, QProgressDialog, QMessageBox, QScrollArea
 from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot, Qt, QCoreApplication
 from T3DE import Scene, RGB, Vec3, Euler, Scale
 from PyQt5.QtGui import QImage, QPixmap
-from T3DR import Texel, Photon, Debug
+from T3DR import Texel, Photon, Debug, Post
 from string import ascii_uppercase
 from functools import partial
 from threading import Lock
+import qimage2ndarray
 import numpy as np
 import math
 import sys
@@ -124,8 +125,8 @@ class CollapsiblePanel(QWidget):
         self.panelLayout.setAlignment(Qt.AlignTop)
         self.layout.addWidget(self.panel)
         
-        self.panel.setStyleSheet('background-color: #e3e3e3; border-top-left-radius: 0; border-top-right-radius: 0; border-bottom-left-radius: 5px; border-bottom-right-radius: 5px;')
-        self.toggle.setStyleSheet('')
+        self.panel.setStyleSheet('CollapsiblePanel > QWidget { background-color: #e3e3e3; border-top-left-radius: 0; border-top-right-radius: 0; border-bottom-left-radius: 5px; border-bottom-right-radius: 5px; }')
+        self.toggle.setStyleSheet('CollapsiblePanel > QPushButton { padding: 3px; background-color: #ffffff; border-radius: 5px; } CollapsiblePanel > QPushButton:hover { background-color: #ffe1e3; }')
 
         self.expanded = False
 
@@ -137,12 +138,13 @@ class CollapsiblePanel(QWidget):
     def togglePanel(self):
         # if self.toggle.isChecked():
         if not self.expanded:
-            self.toggle.setStyleSheet('background-color: #e3e3e3; border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-left-radius: 0; border-bottom-right-radius: 0; padding-top: 3px; padding-bottom: 1px;')
+            self.toggle.setStyleSheet('CollapsiblePanel > QPushButton { background-color: #e3e3e3; border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-left-radius: 0; border-bottom-right-radius: 0; padding-top: 3px; padding-bottom: 1px; } CollapsiblePanel > QPushButton:hover { background-color: #efdfe1; }')
             self.toggle.setText('V ' + self.title)
             self.expanded = True
             self.panel.setFixedHeight(self.panel.sizeHint().height())
         else:
-            self.toggle.setStyleSheet('')
+            # self.toggle.setStyleSheet('padding: 3px; background-color: #ffffff; border-radius: 5px;')
+            self.toggle.setStyleSheet('CollapsiblePanel > QPushButton { padding: 3px; background-color: #ffffff; border-radius: 5px; } CollapsiblePanel > QPushButton:hover { background-color: #ffe1e3; }')
             self.toggle.setText('> ' + self.title)
             self.expanded = False
             self.panel.setFixedHeight(0)
@@ -159,6 +161,7 @@ class ViewportThread(QThread):
         self.sharedState = sharedState
         self.texel = Texel(scene=scene, options={
             'edges': True,
+            'vertices': True,
             'ambient': RGB(32, 32, 32),
             'selectedObject': self.sharedState.selectedObject,
             'normals': self.sharedState.normals,
@@ -183,6 +186,7 @@ class ViewportThread(QThread):
                 ## Get image data from render
                 render = engine.render()
                 renderedData = render.imageAs('np')
+                # renderedData = Post.upscale(renderedData, 10)
 
                 ## Send the signal back to the connected slot
                 self.renderComplete.emit(renderedData)
@@ -197,7 +201,7 @@ class ViewportThread(QThread):
 ## Separate thread for rendering final render
 class RenderThread(QThread):
     ## Setup progress update signal
-    progressUpdate = pyqtSignal(dict, int)
+    progressUpdate = pyqtSignal(dict, int, int)
     ## Setup render complete signal
     renderComplete = pyqtSignal(np.ndarray)
     
@@ -208,7 +212,7 @@ class RenderThread(QThread):
     
     def run(self):
         # render = self.photon.render(progressCallback=self.progressUpdate.emit)
-        render = self.photon.render(progressCallback=lambda data, key: self.progressUpdate.emit(data, key), cancelCallback=lambda: self.sharedState.renderCancelled)
+        render = self.photon.render(progressCallback=lambda data, key, total: self.progressUpdate.emit(data, key, total), cancelCallback=lambda: self.sharedState.renderCancelled)
         renderedData = render.imageAs('np')
         
         self.renderComplete.emit(renderedData)
@@ -240,14 +244,9 @@ class MainWindow(QMainWindow):
         })
         
         ## Setup photon instance for the actual render
-        self.renderer = Photon(scene=self.scene, options={
-            'progressMode': 'none',
-            
-            'step': 80,
-            'fillStep': True,
-            
+        self.renderer = Photon(scene=self.scene, options={            
             'bounces': 2,
-            'samples': 3,
+            'samples': 1,
             
             'aabb': True,
             'bvh': True,
@@ -260,7 +259,7 @@ class MainWindow(QMainWindow):
             
             'ambient': RGB(32, 32, 32),
             
-            'threads': 2,
+            'threads': 1,
         })
 
         ## Setup window
@@ -279,10 +278,18 @@ class MainWindow(QMainWindow):
         self.viewport.setContentsMargins(0, 0, 0, 0)
         self.layout.addWidget(self.viewport)
 
-        ## Setup controls layout
-        self.controlsLayout = QVBoxLayout()
+        ## Setup scrollable controls area
+        self.controlsScrollArea = QScrollArea()
+        self.controlsScrollArea.setWidgetResizable(True)
+        
+        # Setup controls container
+        self.controlsContainer = QWidget()
+        self.controlsScrollArea.setWidget(self.controlsContainer)
+        self.controlsLayout = QVBoxLayout(self.controlsContainer)
         self.controlsLayout.setAlignment(Qt.AlignTop)
-        self.layout.addLayout(self.controlsLayout)
+        
+        # Add the scroll area to the main layout
+        self.layout.addWidget(self.controlsScrollArea)
 
         ## Setup button to toggle normals visibility
         self.normalsButton = QPushButton('Normals')
@@ -307,6 +314,12 @@ class MainWindow(QMainWindow):
         self.controlsLayout.addWidget(self.viewportPanel)
         self.setupViewportPanel()
 
+        ## Setup camera panel
+        self.cameraPanel = CollapsiblePanel('Camera')
+        self.cameraPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.controlsLayout.addWidget(self.cameraPanel)
+        self.setupCameraPanel()
+
         ## Setup transform panel
         self.transformPanel = CollapsiblePanel('Transform')
         self.transformPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -319,6 +332,7 @@ class MainWindow(QMainWindow):
 
         self.refreshTransformProperties()
         self.refreshRenderProperties()
+        self.refreshCameraProperties()
         self.viewportThread.start()
     
     # MARK: > CASE FORMAT
@@ -337,7 +351,7 @@ class MainWindow(QMainWindow):
         return returnString
     
     def setupTransformPanel(self):
-                ## Setup transform properties region
+        ## Setup transform properties region
         self.transformPropertiesRegion = QWidget()
         self.transformPropertiesRegion.setStyleSheet('background-color: #efefef; border-radius: 4px; margin: 4px;')
         self.transformPropertiesRegion.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -457,6 +471,51 @@ class MainWindow(QMainWindow):
         self.debugTab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.viewportModesTabs.addTab(self.debugTab, 'X')
     
+    def refreshCameraProperties(self):
+        self.cameraLengthField.blockSignals(True)
+        camera = self.scene.camera
+        self.cameraLengthField.setText(str(camera.length))
+        self.cameraLengthField.blockSignals(False)
+    
+    def adjustCamLength(self):
+        try:
+            length = int(self.cameraLengthField.text())
+            camera = self.scene.camera
+
+            camera.length = length
+            
+            self.sharedState.sceneChanged = True
+        except ValueError:
+            pass
+
+        self.refreshCameraProperties()
+    
+    def setupCameraPanel(self):
+        ## Setup camera properties region
+        self.cameraPropertiesRegion = QWidget()
+        self.cameraPropertiesRegion.setStyleSheet('background-color: #efefef; border-radius: 4px; margin: 4px;')
+        self.cameraPropertiesRegion.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.cameraPropertiesRegionLayout = QVBoxLayout()
+        self.cameraPropertiesRegionLayout.setAlignment(Qt.AlignTop)
+        self.cameraPropertiesRegion.setLayout(self.cameraPropertiesRegionLayout)
+        self.cameraPanel.panelLayout.addWidget(self.cameraPropertiesRegion)
+
+        self.cameraLengthField = QLineEdit(self)
+        self.cameraLengthField.setStyleSheet('background-color: #dedede;')
+        self.cameraLengthField.setPlaceholderText('Length')
+        self.cameraLengthField.editingFinished.connect(lambda: self.adjustCamLength())
+        self.cameraPropertiesRegionLayout.addWidget(self.cameraLengthField)
+
+        self.selectBoundCameraButton = QPushButton('Select camera')
+        self.selectBoundCameraButton.setStyleSheet('background-color: #ffffff; border-radius: 3px; margin: 0 6px 4px 6px;')
+        self.selectBoundCameraButton.clicked.connect(self.selectBoundCamera)
+        self.cameraPanel.panelLayout.addWidget(self.selectBoundCameraButton)
+
+    def selectBoundCamera(self):
+        self.sharedState.selectedObject = self.scene.camera.id
+        self.sharedState.sceneChanged = True
+        self.refreshTransformProperties()
+
     # MARK: > RENDER PANEL
     ## Setup the render panel
     def setupRenderPanel(self):
@@ -477,13 +536,14 @@ class MainWindow(QMainWindow):
                 optionInput.setText(str(self.renderer.options[key]))
                 optionInput.editingFinished.connect(self.updateRenderOptions)
                 optionInput.setStyleSheet('background-color: #dedede; padding-top: 1px; padding-bottom: 1px;')
+                optionInput.setStyleSheet('QLineEdit { background-color: #dedede; padding-top: 1px; padding-bottom: 1px; } QLineEdit:hover { background-color: #efdfe1; }')
             elif typeOf == bool:
                 optionInput = QPushButton(self.camelToWords(key))
                 optionInput.setCheckable(True)
                 if self.renderer.options[key]:
                     optionInput.setChecked(True)
                 optionInput.clicked.connect(self.updateRenderOptions)
-                optionInput.setStyleSheet('QPushButton { background-color: #ffffff; padding-top: 2px; padding-bottom: 2px; } QPushButton:hover { background-color: #FFE1E3; } QPushButton:checked { background-color: #F488B8 }')
+                optionInput.setStyleSheet('QPushButton { background-color: #ffffff; padding-top: 2px; padding-bottom: 2px; } QPushButton:hover { background-color: #ffe1e3; } QPushButton:checked { background-color: #f488b8 }')
             else:
                 continue
             
@@ -679,13 +739,15 @@ class MainWindow(QMainWindow):
     
     # MARK: > PROGRESS
     ## Update progress bars to show render progress
-    def updateRenderProgress(self, data, key):
-        avgProg = sum([value[0]/value[1] for value in data.values()])
+    def updateRenderProgress(self, data, key, total):
+        avgProg = sum([value/total for value in data.values()])
             
         self.progressDialog.setValue(int(avgProg * 100))
             
-        if all([val[0]/val[1] >= 0.99 for val in data.values()]):
+        if all([val/total >= 0.99 for val in data.values()]):
             self.progressDialog.setLabelText('Merging ...')
+        
+        # print(f'Thread {key}: {data[key]/total}%')
         
     
     # MARK: > VPORT CLICK
@@ -728,7 +790,8 @@ class MainWindow(QMainWindow):
         height, width, _ = imageData.shape
 
         ## Convert the NumPy array to a QImage
-        qImage = QImage(imageData.data, width, height, imageData.strides[0], QImage.Format_RGB888)
+        # qImage = QImage(imageData.data, width, height, imageData.strides[0], QImage.Format_RGB888)
+        qImage = qimage2ndarray.array2qimage(imageData)
 
         ## Set the pixmap as the image label
         pixmap = QPixmap.fromImage(qImage)

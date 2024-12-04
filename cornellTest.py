@@ -22,7 +22,7 @@ boxShader = Shader(
 boxEmissionShader = Shader(
     color = RGB(255, 255, 120),
     debugColor = RGB(120, 120, 20),
-    emissionStrength = 0.6
+    emissionStrength = 1
 )
 redWallShader = Shader(
     reflectivity = 1,
@@ -37,26 +37,42 @@ greenWallShader = Shader(
     debugColor = RGB(20, 220, 220)
 )
 box.setShader(boxShader)
-box.setShader(boxEmissionShader, [24, 29])
-box.setShader(redWallShader, [4, 5])
-box.setShader(greenWallShader, [44, 45])
+box.setShader(boxEmissionShader, [48, 49])
+box.setShader(redWallShader, [28, 29])
+box.setShader(greenWallShader, [27, 26])
 box.position = Vec3(0, 0, 1)
 
-monkey: Object = Object(scene=scene, name='Monkey', mesh=monkeyMesh)
-monkeyShader = Shader(
-    reflectivity = 0.2,
-    roughness = 0.04,
-    color = RGB(180, 180, 180),
-    debugColor = RGB(180, 180, 180)
+# monkey: Object = Object(scene=scene, name='Monkey', mesh=monkeyMesh)
+# monkeyShader = Shader(
+#     reflectivity = 0.2,
+#     roughness = 0.04,
+#     color = RGB(180, 180, 180),
+#     debugColor = RGB(180, 180, 180)
+# )
+# monkeyMaterial = Material(
+#     ior=1.4
+# )
+# monkey.setShader(monkeyShader)
+# monkey.material = monkeyMaterial
+# monkey.setTransforms()
+# monkey.position = Vec3(1.44, -1.8, 1.4)
+# monkey.scale = Scale(1.8, 1.8, 1.8)
+
+cube: Cube = Cube(scene=scene, name='cube')
+cubeShader = Shader(
+    reflectivity = 0.15,
+    roughness = 0.5,
+    color = RGB(255, 255, 255),
+    debugColor = RGB(0, 0, 0)
 )
-monkeyMaterial = Material(
+cubeMaterial = Material(
     ior=1.4
 )
-monkey.setShader(monkeyShader)
-monkey.material = monkeyMaterial
-monkey.setTransforms()
-monkey.position = Vec3(1.44, -1.8, 1.4)
-monkey.scale = Scale(1.8, 1.8, 1.8)
+cube.setShader(cubeShader)
+cube.material = cubeMaterial
+cube.position = Vec3(1.44, -0.9, 1.4)
+cube.scale = Scale(1.4, 2.6, 1.8)
+cube.rotation.y = math.radians(10)
 
 mirrorBall: Sphere = Sphere(scene=scene, name='Mirror ball')
 mirrorBallShader = Shader(
@@ -81,7 +97,7 @@ camera.position = Vec3(0, 0, -11)
 # camera.rotation.x = math.radians(4)
 
 debug = Debug(scene=scene, options={
-    'size': 4,
+    'size': 3,
     'direction': 'side',
     'camera': True,
     'aabb': False,
@@ -89,13 +105,11 @@ debug = Debug(scene=scene, options={
 })
 
 renderer = Photon(scene=scene, options={
-    'progressMode': 'none',
-    
-    'step': 80,
+    'step': 20, ## TODO # Upscaling in post
     'fillStep': True,
     
     'bounces': 3,
-    'samples': 3,
+    'samples': 2,
     
     'aabb': True,
     'bvh': True,
@@ -111,31 +125,36 @@ renderer = Photon(scene=scene, options={
     },
     
     'lights': True,
-    'emissionSampleDensity': 3,
+    'emissionSampleDensity': 1,
     
-    'ambient': RGB(32, 32, 32)
+    'ambient': RGB(32, 32, 32),
+    
+    'threads': 1,
 })
 
 tex = Texel(scene=scene)
 
-render = renderer.render()
+sceneData = scene.toDict()
 
-debug.inspect(render, scene)
+with open('cornellScene.json', 'w') as f:
+    json.dump(sceneData, f)
 
-compressedRenderDict = Post.compressRenderedDict(render.toDict(), 10)
+# render = renderer.render()
 
-data = compressedRenderDict
-with open('renders/renderedTest.json', 'w') as f:
-    json.dump(data, f)
+# debug.inspect(render, scene)
 
-# FIXME # Texel face indexing only works after Photon has been run (on the same scene)
+# compressedRenderDict = Post.compressRenderedDict(render.toDict(), 10)
+
+# data = compressedRenderDict
+# with open('renders/renderedTest.json', 'w') as f:
+#     json.dump(data, f)
 
 # render = tex.render()
 
 # img = render.imageAs('cv2')
 
-# debug.inspect(render, scene)
+# # debug.inspect(render, scene)
 
-# cv2.imwrite(f'renders/cornell/highdef11|{render.time:.1f}|{render.rays}.png', img)
+# cv2.imwrite(f'renders/cornell/highdef13|{render.time:.1f}|{render.rays}.png', img)
 
 exit()

@@ -665,7 +665,7 @@ class Scene:
         ## Combine camera and objects data
         data = {
             'camera': self.camera.toDict(),
-            'objects': [object.toDict() for object in self.objects if object != self.camera]
+            'objects': [object.toDict() for object in self.objects]
         }
         
         return data
@@ -688,16 +688,18 @@ class Scene:
         ## Bind the camera
         scene.camera = camera
         
+        scene.objects.append(camera)
+        
         for obj in data.get('objects', []):
+            ## If it is the currently bound camera, then ignore it (as it has already been set)
+            if obj.get('boundCam', False):
+                continue
+
             ## Create a new object
             object = Object.fromDict(obj)
             
             ## Add it to the scene
             scene.objects.append(object)
-
-            ## If it is the currently bound camera, then ignore it (as it has already been set)
-            if object == scene.camera:
-                continue
 
             ## Set the object to be in the given scene
             object.scene = scene
@@ -724,7 +726,9 @@ class Scene:
             data = json.load(f)
         
         ## Convert the dictionary data into a scene
-        return Scene.fromDict(data)
+        scene = Scene.fromDict(data)
+        
+        return scene
 
 # MARK: SHADER
 ## Shader structure providing information about an object's surface properties
@@ -1048,7 +1052,6 @@ class Object:
         self.shaderIndices = [shaderIndex for shaderIndex in facesJSON.values()]
     
     def toDict(self):
-        meshDict = self.mesh.toDict() if self.mesh else Mesh([], []).toDict()
         data = {
             'id': self.id,
 
@@ -1059,8 +1062,6 @@ class Object:
             'rotation': [*self.rotation],
             'scale': [*self.scale],
             
-            'mesh': meshDict,
-            
             'shaders': [shader.toDict() for shader in self.shaders],
             'shaderIndices': self.shaderIndices,
             
@@ -1069,18 +1070,21 @@ class Object:
             'bvh': self.bvh.toDict(),
         }
 
+        if self.type == 'mesh':
+            return {
+                **data,
+                'mesh': self.mesh.toDict(),
+            }
         if self.type == 'camera':
             cameraData = {
-                'resolutionWidth': self.resolutionWidth,
-                'resolutionHeight': self.resolutionHeight,
-                
-                'width': self.width,
                 'length': self.length,
+                
+                'boundCam': self == self.scene.camera,
             }
             
             return {
                 **data,
-                **cameraData
+                **cameraData,
             }
 
         if self.type == 'light':
@@ -1093,16 +1097,32 @@ class Object:
     
     @staticmethod
     def fromDict(data): # NOTE ## Objects are loaded into a new empty scene if loaded individually. To load into a given scene, either load the scene itself, or load the object and then reset its scene property to the correct scene.
-        obj = Object(scene=Scene())
+        type = data.get('type', 'empty')
+
+        if type == 'mesh':
+            obj = Object(scene=Scene())
+            obj.mesh = Mesh.fromDict(data.get('mesh', {'vertices': [], 'faces': []}))
+
+        elif type == 'camera':
+            obj = Camera(scene=Scene())
+            obj.length = data.get('length', 1)
+
+        elif type == 'light':
+            obj = Light(scene=Scene())
+            obj.strength = data.get('strength', 1)
+        
+        elif type == 'sphere':
+            obj = Sphere(scene=Scene())
+        
+        else:
+            obj = Object(scene=Scene())
 
         obj.name = data.get('name', 'Empty Object')
-        obj.type = data.get('type', 'empty')
+        obj.type = type
         
         obj.position = Vec3(*data.get('position', [0, 0, 0]))
         obj.rotation = Euler(*data.get('rotation', [0, 0, 0]))
         obj.scale = Scale(*data.get('scale', [0, 0, 0]))
-        
-        obj.mesh = Mesh.fromDict(data.get('mesh', {'vertices': [], 'faces': []}))
         
         obj.shaders = [Shader.fromDict(shaderDict) for shaderDict in data.get('shaders', [])]
         obj.shaderIndices = data.get('shaderIndices', [])
@@ -1110,16 +1130,6 @@ class Object:
         obj.material = Material.fromDict(data.get('material', {}))
         
         obj.bvh = BVHNode.fromDict(data.get('bvh', {}))
-
-        if obj.type == 'camera':
-            obj.resolutionWidth = data.get('resolutionWidth', 1440)
-            obj.resolutionHeight = data.get('resolutionHeight', 900)
-            
-            obj.width = data.get('width', 1.6)
-            obj.length = data.get('length', 1)
-
-        if obj.type == 'light':
-            obj.strength = data.get('strength', 1)
         
         return obj
     
@@ -1221,18 +1231,15 @@ class Cube(Object):
         super(Cube, self)._defaultShaders()
 
 class Sphere(Object):
-    def __init__(self, scene, name=None, position=None) -> None:
+    def __init__(self, scene, name='Sphere', position=None) -> None:
         super(Sphere, self).__init__(scene, name=name, position=position)
         self.type = 'sphere'
         super(Sphere, self)._defaultShaders()
 
 class Camera(Object):
-    def __init__(self, scene, name='Camera', length=20, width=1440, height=900, position=None) -> None:
+    def __init__(self, scene, name='Camera', length=20, position=None) -> None:
         super(Camera, self).__init__(scene, name=name, position=position)
         self.__length = length/20
-        self.__resolutionWidth = width
-        self.resolutionHeight = height
-        self.width = (width/height)
         self.type = 'camera'
         if self.scene.camera == None:
             self.scene.camera = self
@@ -1240,20 +1247,11 @@ class Camera(Object):
     
     @property
     def length(self):
-        return self.__length
+        return self.__length*20
     
     @length.setter
     def length(self, length):
         self.__length = length/20
-        
-    @property
-    def resolutionWidth(self):
-        return self.__resolutionWidth
-    
-    @resolutionWidth.setter
-    def resolutionWidth(self, width):
-        self.__resolutionWidth = width
-        self.width = width/self.resolutionHeight
             
 class Light(Object):
     def __init__(self, scene, name='Light', position=None, strength=1) -> None:
