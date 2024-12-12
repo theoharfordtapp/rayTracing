@@ -6,19 +6,24 @@
 # (Explorer)
 #
 # NOTE # Comments with `MARK` in them are purely IDE-related. They have no relevance to the code.
+# once aprone a timothy there was a dukey manholecover bestowed aprone a billy jewan lober theat shes not a real girklfeind
 
 # MARK: IMPORTS
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QFileDialog, QLineEdit, QTabWidget, QSizePolicy, QProgressDialog, QMessageBox, QScrollArea
-from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot, Qt, QCoreApplication
-from T3DE import Scene, RGB, Vec3, Euler, Scale
-from PyQt5.QtGui import QImage, QPixmap
+import copy
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QFileDialog, QListWidget,
+    QLineEdit, QTabWidget, QSizePolicy, QProgressDialog, QMessageBox, QScrollArea, QAction, QMenu, QColorDialog,
+)
+from T3DE import Scene, RGB, Shader, Vec3, Euler, Scale, Camera, Light, Sphere, Cube, Object, Mesh
+from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot, Qt
+from PyQt5.QtGui import QPixmap, QCursor, QColor
 from T3DR import Texel, Photon, Debug, Post
 from string import ascii_uppercase
-from functools import partial
 from threading import Lock
 import qimage2ndarray
 import numpy as np
 import math
+import cv2
 import sys
 
 
@@ -34,6 +39,8 @@ class SharedState:
         self.__normals = False
         self.__engine = 'texel'
         self.__renderCancelled = False
+        self.__vertices = False
+        self.__selectedFaces = []
     
     # MARK: > SCENE CHANGED
     @property
@@ -45,6 +52,36 @@ class SharedState:
     def sceneChanged(self, sceneChanged):
         with self.lock:
             self.__sceneChanged = sceneChanged
+    
+    # MARK: > SCENE CHANGED
+    @property
+    def selectedFaces(self):
+        with self.lock:
+            return self.__selectedFaces
+
+    @selectedFaces.setter
+    def selectedFaces(self, selectedFaces):
+        with self.lock:
+            self.__selectedFaces = selectedFaces
+    
+    def selectedFacesAppend(self, val):
+        with self.lock:
+            self.__selectedFaces.append(val)
+    
+    def selectedFacesRemove(self, val):
+        with self.lock:
+            self.__selectedFaces.remove(val)
+    
+    # MARK: > VERTICESW
+    @property
+    def vertices(self):
+        with self.lock:
+            return self.__vertices
+
+    @vertices.setter
+    def vertices(self, vertices):
+        with self.lock:
+            self.__vertices = vertices
     
     # MARK: > SELECTED OBJ
     @property
@@ -150,26 +187,47 @@ class CollapsiblePanel(QWidget):
             self.panel.setFixedHeight(0)
 
 
+# MARK: > DRAG BUTTON
+class DragButton(QPushButton):
+    onDrag = pyqtSignal(int, int)
+    
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent=parent)
+        self.originalPos = None
+        self.offset = 0
+        self.setMouseTracking(True)
+    
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            self.originalPos = QCursor.pos()
+            QApplication.setOverrideCursor(Qt.BlankCursor)
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, _):
+        if QApplication.overrideCursor() and self.originalPos:
+            currentPos = QCursor.pos()
+            self.onDrag.emit(currentPos.x() - self.originalPos.x(), currentPos.y() - self.originalPos.y())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            QApplication.restoreOverrideCursor()
+            buttonCenter = self.mapToGlobal(self.rect().center())
+            QCursor.setPos(buttonCenter)
+        super().mouseReleaseEvent(event)
+
+
 # MARK: VIEWPORT THREAD
 ## Separate thread for rendering viewport concurrently with the GUI
 class ViewportThread(QThread):
     ## Setup render complete signal
     renderComplete = pyqtSignal(np.ndarray)
     
-    def __init__(self, scene, sharedState, parent=None):
+    def __init__(self, main, sharedState, parent=None):
         super().__init__(parent)
         self.sharedState = sharedState
-        self.texel = Texel(scene=scene, options={
-            'edges': True,
-            'vertices': True,
-            'ambient': RGB(32, 32, 32),
-            'selectedObject': self.sharedState.selectedObject,
-            'normals': self.sharedState.normals,
-        })
-        self.debug = Debug(scene=scene, options={
-            'direction': 'side',
-            'size': 3
-        })
+        self.texel = main.texel
+        self.debug = main.debug
 
     # MARK: > RUN
     ## Render the scene continuously
@@ -180,6 +238,8 @@ class ViewportThread(QThread):
                 ## Change the selected object gizmo
                 self.texel.options['selectedObject'] = self.sharedState.selectedObject
                 self.texel.options['normals'] = self.sharedState.normals
+                self.texel.options['vertices'] = self.sharedState.vertices
+                self.texel.options['selectedFaces'] = self.sharedState.selectedFaces
 
                 engine = self.texel if self.sharedState.engine == 'texel' else self.debug
                 
@@ -211,9 +271,13 @@ class RenderThread(QThread):
         self.sharedState = sharedState
     
     def run(self):
-        # render = self.photon.render(progressCallback=self.progressUpdate.emit)
-        render = self.photon.render(progressCallback=lambda data, key, total: self.progressUpdate.emit(data, key, total), cancelCallback=lambda: self.sharedState.renderCancelled)
+        render = self.photon.render(progressCallback=lambda data, key, total: self.progressUpdate.emit(data, key, total), cancelCallback=lambda: self.sharedState.renderCancelled, returnType='rendered')
+        print('received rendered')
         renderedData = render.imageAs('np')
+        print('extracted np')
+        # renderedData = self.photon.render(progressCallback=lambda data, key, total: self.progressUpdate.emit(data, key, total), cancelCallback=lambda: self.sharedState.renderCancelled, returnType='np')
+        
+        # renderedData = Post.upscale(renderedData, 6)
         
         self.renderComplete.emit(renderedData)
 
@@ -228,12 +292,7 @@ class MainWindow(QMainWindow):
         self.sharedState = SharedState()
         
         ## Setup scene for explorer
-        filepath = QFileDialog.getOpenFileName()[0]
-        self.scene = Scene.fromJSON(filepath)
-        
-        ## Build BVH for all objects
-        for obj in self.scene.objects:
-            obj.bvh = obj.buildBVH()
+        self.scene = Scene()
 
         ## Setup photon instance for ray-tracing to detect clicks
         self.tracer = Photon(scene=self.scene, options={
@@ -243,8 +302,11 @@ class MainWindow(QMainWindow):
             'transformBefore': False,
         })
         
-        ## Setup photon instance for the actual render
-        self.renderer = Photon(scene=self.scene, options={            
+        ## Setup rendering engines
+        self.renderer = Photon(scene=self.scene, options={
+            'width': 72,
+            'height': 45,
+        
             'bounces': 2,
             'samples': 1,
             
@@ -255,12 +317,36 @@ class MainWindow(QMainWindow):
             'debug': False,
             
             'lights': True,
-            'emissionSampleDensity': 1,
             
             'ambient': RGB(32, 32, 32),
             
             'threads': 1,
         })
+        self.texel = Texel(scene=self.scene, options={
+            'width': 1440,
+            'height': 900,
+            'edges': True,
+            'lights': True,
+            'vertices': True,
+            'axes': False,
+            'ambient': RGB(32, 32, 32),
+            'selectedObject': self.sharedState.selectedObject,
+            'normals': self.sharedState.normals,
+            'attenuation': True,
+            'lighting': True,
+        })
+        self.debug = Debug(scene=self.scene, options={
+            'direction': 'side',
+            'size': 3
+        })
+        
+        self.newScene()
+
+        ## Keep track of most recent render
+        self.lastRender = None
+        
+        self.facesMode = False
+        self.shiftHeld = False
 
         ## Setup window
         self.setWindowTitle('3D Explorer')
@@ -271,6 +357,72 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.centralWidget)
         self.layout = QHBoxLayout()
         self.centralWidget.setLayout(self.layout)
+        
+        ## Setup menu bar
+        menuBar = self.menuBar()
+
+        ## Setup file menu
+        fileMenu = menuBar.addMenu("File")
+
+        ## Setup new action
+        newAction = QAction("New", self)
+        newAction.triggered.connect(self.newScene)
+        fileMenu.addAction(newAction)
+
+        ## Setup open action
+        openAction = QAction("Open", self)
+        openAction.triggered.connect(self.openScene)
+        fileMenu.addAction(openAction)
+
+        ## Setup save action
+        saveAction = QAction("Save", self)
+        saveAction.triggered.connect(self.saveScene)
+        fileMenu.addAction(saveAction)
+
+        ## Setup render menu
+        renderMenu = menuBar.addMenu("Render")
+
+        ## Setup render action
+        renderAction = QAction("Render", self)
+        renderAction.triggered.connect(self.renderPhoton)
+        renderMenu.addAction(renderAction)
+
+        ## Setup save render action
+        saveRenderAction = QAction("Save Render", self)
+        saveRenderAction.triggered.connect(self.saveRender)
+        renderMenu.addAction(saveRenderAction)
+
+        ## Setup object menu
+        objectMenu = menuBar.addMenu("Object")
+
+        ## Setup add menu
+        addObjectMenu = QMenu("Add", self)
+        objectMenu.addMenu(addObjectMenu)
+
+        ## Setup add cube action
+        addCubeAction = QAction("Cube", self)
+        addCubeAction.triggered.connect(lambda: self.addObject('cube'))
+        addObjectMenu.addAction(addCubeAction)
+
+        ## Setup add light action
+        addLightAction = QAction("Light", self)
+        addLightAction.triggered.connect(lambda: self.addObject('light'))
+        addObjectMenu.addAction(addLightAction)
+
+        ## Setup add sphere action
+        addSphereAction = QAction("Sphere", self)
+        addSphereAction.triggered.connect(lambda: self.addObject('sphere'))
+        addObjectMenu.addAction(addSphereAction)
+
+        ## Setup add empty action
+        addEmptyAction = QAction("Empty", self)
+        addEmptyAction.triggered.connect(lambda: self.addObject('empty'))
+        addObjectMenu.addAction(addEmptyAction)
+
+        ## Setup add mesh action
+        addMeshAction = QAction("Mesh", self)
+        addMeshAction.triggered.connect(lambda: self.addObject('mesh'))
+        addObjectMenu.addAction(addMeshAction)
 
         ## Setup viewport
         self.viewport = ClickableImage('...')
@@ -302,13 +454,18 @@ class MainWindow(QMainWindow):
         self.flipNormalsButton.clicked.connect(self.flipSelectedNormals)
         self.controlsLayout.addWidget(self.flipNormalsButton)
 
+        ## Setup button to delete object
+        self.deleteObjectButton = QPushButton('Delete')
+        self.deleteObjectButton.clicked.connect(self.deleteObject)
+        self.controlsLayout.addWidget(self.deleteObjectButton)
+
         ## Setup render panel
         self.renderPanel = CollapsiblePanel('Render')
         self.renderPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.controlsLayout.addWidget(self.renderPanel)
         self.setupRenderPanel()
 
-        ## Setup render panel
+        ## Setup viewport panel
         self.viewportPanel = CollapsiblePanel('Viewport')
         self.viewportPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.controlsLayout.addWidget(self.viewportPanel)
@@ -319,6 +476,18 @@ class MainWindow(QMainWindow):
         self.cameraPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.controlsLayout.addWidget(self.cameraPanel)
         self.setupCameraPanel()
+        
+        ## Setup shader panel
+        self.shaderPanel = CollapsiblePanel('Shader')
+        self.shaderPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.controlsLayout.addWidget(self.shaderPanel)
+        self.setupShaderPanel()
+
+        ## Setup light panel
+        self.lightPanel = CollapsiblePanel('Light')
+        self.lightPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.controlsLayout.addWidget(self.lightPanel)
+        self.setupLightPanel()
 
         ## Setup transform panel
         self.transformPanel = CollapsiblePanel('Transform')
@@ -326,14 +495,100 @@ class MainWindow(QMainWindow):
         self.controlsLayout.addWidget(self.transformPanel)
         self.setupTransformPanel()
 
+        self.originalTransforms = [Vec3(0, 0, 0), Euler(0, 0, 0), Scale(1, 1, 1)]
+
         ## Setup threading for separate viewport render
-        self.viewportThread = ViewportThread(scene=self.scene, sharedState=self.sharedState)
+        self.viewportThread = ViewportThread(main=self, sharedState=self.sharedState)
         self.viewportThread.renderComplete.connect(self.displayRenderedImage)
 
         self.refreshTransformProperties()
         self.refreshRenderProperties()
         self.refreshCameraProperties()
+        self.refreshShaderProperties()
         self.viewportThread.start()
+    
+    def keyPressEvent(self, event):
+        if event.modifiers() & Qt.ShiftModifier:
+            self.shiftHeld = True
+        
+        if event.key() == Qt.Key_F:
+            self.toggleFacesMode()
+
+    def keyReleaseEvent(self, event):
+        if not event.modifiers() & Qt.ShiftModifier:
+            self.shiftHeld = False
+    
+    def addObject(self, typeOf):
+        if typeOf == 'light':
+            obj = Light(scene=self.scene)
+        elif typeOf == 'sphere':
+            obj = Sphere(scene=self.scene)
+        elif typeOf == 'cube':
+            obj = Cube(scene=self.scene)
+        elif typeOf == 'empty':
+            obj = Object(scene=self.scene)
+        elif typeOf == 'mesh':
+            filepath = QFileDialog.getOpenFileName(self, "Load mesh", "", "STL (*.stl)")[0]
+            mesh = Mesh.fromSTL(filepath)
+            obj = Object(scene=self.scene, mesh=mesh)
+
+        obj.bvh = obj.buildBVH()
+        
+        self.refreshTransformProperties()
+        self.sharedState.sceneChanged = True
+        
+        print(self.scene.objects)
+    
+    def newScene(self):
+        self.scene = Scene()
+        Camera(self.scene, position=Vec3(0, 0, -8))
+        Cube(self.scene, position=Vec3(0, 0, 0))
+        Light(self.scene, position=Vec3(0, 3, 0))
+
+        self.tracer.scene = self.scene
+        self.renderer.scene = self.scene
+        self.texel.scene = self.scene
+        self.debug.scene = self.scene
+        
+        self.sharedState.sceneChanged = True
+
+    def openScene(self):
+        filepath = QFileDialog.getOpenFileName(self, "Open Scene", "", "JSON (*.json)")[0]
+        self.scene = Scene.fromJSON(filepath)
+        
+        ## Build BVH for all objects
+        for obj in self.scene.objects:
+            obj.bvh = obj.buildBVH()
+        
+        self.tracer.scene = self.scene
+        self.renderer.scene = self.scene
+        self.texel.scene = self.scene
+        self.debug.scene = self.scene
+        
+        self.sharedState.sceneChanged = True
+    
+    def saveRender(self):
+        filepath = QFileDialog.getSaveFileName(self, "Save Render", "", "PNG (*.png);;JPEG (*.jpg, *.jpeg)")[0]
+        
+        cv2.imwrite(self.lastRender, filepath)
+    
+    def saveScene(self):
+        # filepath = QFileDialog.getOpenFileName()[0]
+        filepath = QFileDialog.getSaveFileName(self, "Save Scene", "", "JSON (*.json)")[0]
+        
+        self.scene.saveJSON(filepath)
+    
+    def deleteObject(self):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        
+        if obj != None:
+            self.sharedState.selectedObject = -1
+            self.scene.objects.remove(obj)
+            self.refreshShaderProperties()
+            self.refreshTransformProperties()
+            self.refreshRenderProperties()
+            self.refreshLightProperties()
+            self.sharedState.sceneChanged = True
     
     # MARK: > CASE FORMAT
     ## Convert camel case to words
@@ -350,6 +605,232 @@ class MainWindow(QMainWindow):
         
         return returnString
     
+    def setupShaderPanel(self):
+        self.shaderList = QListWidget()
+        self.shaderList.currentRowChanged.connect(self.refreshShaderProperties)
+        # self.shaderList.currentRowChanged.connect(lambda: print(self.shaderList.currentRow()))
+        self.shaderPanel.panelLayout.addWidget(self.shaderList)
+
+        buttonLayout = QHBoxLayout()
+        self.assignShaderButton = QPushButton("Assign")
+        self.assignShaderButton.clicked.connect(self.assignShader) # IMPLEMENT
+        self.addShaderButton = QPushButton("Add")
+        self.addShaderButton.clicked.connect(self.addShader)
+        self.removeShaderButton = QPushButton("Remove")
+        self.removeShaderButton.clicked.connect(self.removeShader)
+        buttonLayout.addWidget(self.assignShaderButton)
+        buttonLayout.addWidget(self.addShaderButton)
+        buttonLayout.addWidget(self.removeShaderButton)
+        self.shaderPanel.panelLayout.addLayout(buttonLayout)
+        
+        self.facesModeButton = QPushButton("Faces")
+        self.facesModeButton.clicked.connect(self.toggleFacesMode) # IMPLEMENT
+        self.facesModeButton.setCheckable(True)
+        self.shaderPanel.panelLayout.addWidget(self.facesModeButton)
+
+        self.shaderPropertiesRegion = QWidget()
+        self.shaderPropertiesRegion.setStyleSheet('background-color: #efefef; border-radius: 4px; margin: 4px;')
+        self.shaderPropertiesRegion.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.shaderPropertiesRegionLayout = QVBoxLayout()
+        self.shaderPropertiesRegionLayout.setAlignment(Qt.AlignTop)
+        self.shaderPropertiesRegion.setLayout(self.shaderPropertiesRegionLayout)
+        self.shaderPanel.panelLayout.addWidget(self.shaderPropertiesRegion)
+            
+        dummyShader = Shader()
+
+        self.shaderPropertyInputs = {}
+
+        for propertyName, propertyValue in vars(dummyShader).items():
+            inputField = None
+            typeOf = type(propertyValue)
+
+            if typeOf in [str, float, int]:
+                inputField = QLineEdit(self)
+                inputField.setPlaceholderText(self.camelToWords(propertyName))
+                inputField.setText(str(propertyValue))
+                inputField.editingFinished.connect(self.updateShaderProperties)
+                inputField.setStyleSheet('QLineEdit { background-color: #dedede; padding-top: 1px; padding-bottom: 1px; } QLineEdit:hover { background-color: #efdfe1; }')
+            elif typeOf == bool:
+                inputField = QPushButton(self.camelToWords(propertyName))
+                inputField.setCheckable(True)
+                if propertyValue:
+                    inputField.setChecked(True)
+                inputField.clicked.connect(self.updateShaderProperties)
+                inputField.setStyleSheet('QPushButton { background-color: #ffffff; padding-top: 2px; padding-bottom: 2px; } QPushButton:hover { background-color: #ffe1e3; } QPushButton:checked { background-color: #f488b8 }')
+            elif typeOf == RGB:
+                inputField = QPushButton(self.camelToWords(propertyName))
+                inputField.clicked.connect(lambda _, p=propertyName: self.pickShaderColor(p))
+                inputField.setStyleSheet(f'QPushButton {{ background-color: rgb({propertyValue.r}, {propertyValue.g}, {propertyValue.b}); color: black; }}')
+
+            if inputField:
+                self.shaderPropertyInputs[propertyName] = inputField
+                self.shaderPropertiesRegionLayout.addWidget(inputField)
+    
+    def addShader(self):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if obj == None:
+            return
+        
+        obj.shaders.append(Shader())
+        
+        self.refreshShaderProperties()
+    
+    def assignShader(self):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if obj == None:
+            return
+        
+        currentRow = self.shaderList.currentRow()
+        if currentRow < 0:
+            return
+        
+        shader = obj.shaders[currentRow]
+        obj.setShader(shader, self.sharedState.selectedFaces)
+    
+    def toggleFacesMode(self):
+        if self.scene.getObject(self.sharedState.selectedObject) != None:
+            self.facesMode = not self.facesMode
+            self.sharedState.vertices = not self.sharedState.vertices
+            self.sharedState.sceneChanged = True
+        
+        if not self.facesMode:
+            self.sharedState.selectedFaces = []
+        
+        self.facesModeButton.setChecked(self.facesMode)
+    
+    def removeShader(self):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if obj == None:
+            return
+
+        if len(obj.shaders) == 1:
+            return
+        
+        currentRow = self.shaderList.currentRow()
+        if currentRow < 0:
+            return
+        
+        shader = obj.shaders[currentRow]
+        obj.shaders.remove(shader)
+        
+        
+        newIndices = copy.deepcopy(obj.shaderIndices)
+        for i, shaderIndex in enumerate(obj.shaderIndices):
+            if shaderIndex == currentRow:
+                newIndices[i] = 0
+            elif shaderIndex > currentRow:
+                newIndices[i] = shaderIndex-1
+        
+        obj.shaderIndices = newIndices
+        
+        self.refreshShaderProperties()
+        self.sharedState.sceneChanged = True
+    
+    def pickShaderColor(self, propertyName):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if obj == None:
+            return
+
+        currentRow = self.shaderList.currentRow()
+        if currentRow < 0:
+            return
+
+        print(self.shaderList.currentRow())
+        shader = obj.shaders[currentRow]
+
+        currentColor = getattr(shader, propertyName)
+        initialColor = QColor(currentColor.r, currentColor.g, currentColor.b)
+        newColor = QColorDialog.getColor(initialColor, self, self.camelToWords(propertyName))
+
+        if newColor.isValid():
+            newRGB = RGB(newColor.red(), newColor.green(), newColor.blue())
+            setattr(shader, propertyName, newRGB)
+            self.shaderPropertyInputs[propertyName].setStyleSheet(f'QPushButton {{ background-color: rgb({newRGB.r}, {newRGB.g}, {newRGB.b}); color: black; }}')
+            self.sharedState.sceneChanged = True
+        
+    def updateShaderProperties(self):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if obj is None:
+            self.refreshShaderProperties()
+            return
+
+        currentRow = self.shaderList.currentRow()
+        if currentRow < 0:
+            self.refreshShaderProperties()
+            return
+
+        shader = obj.shaders[currentRow]
+
+        for propertyName in self.shaderPropertyInputs.keys():
+            inputField = self.shaderPropertyInputs[propertyName]
+            if not hasattr(shader, propertyName):
+                continue
+
+            value = inputField.text()
+            
+            if value == '':
+                self.refreshShaderProperties()
+                return
+            
+            if type(inputField) == QLineEdit:
+                typeOf = type(getattr(shader, propertyName))
+                if typeOf == str:
+                    setattr(shader, propertyName, value)
+                elif typeOf in [float, int]:
+                    setattr(shader, propertyName, float(value))
+            elif type(inputField) == QPushButton and inputField.isCheckable():
+                setattr(shader, propertyName, inputField.isChecked())
+
+        self.sharedState.sceneChanged = True
+        self.refreshShaderProperties()
+    
+    def refreshShaderProperties(self):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+
+        if obj == None:
+            for inputField in self.shaderPropertyInputs.values():
+                inputField.blockSignals(True)
+                if type(inputField) == QLineEdit:
+                    inputField.setText('')
+                elif type(inputField) == QPushButton and inputField.isCheckable():
+                    inputField.setChecked(False)
+                elif type(inputField) == QPushButton:
+                    inputField.setStyleSheet('QPushButton {{ background-color: #ffffff; color: black; }}')
+                inputField.blockSignals(False)
+            return
+        
+        currentRow = self.shaderList.currentRow()
+
+        self.shaderList.clear()
+
+        for shader in obj.shaders:
+            self.shaderList.addItem(shader.name)
+
+        if currentRow < 0 or currentRow >= len(obj.shaders):
+            currentRow = 0
+        
+        self.shaderList.blockSignals(True)
+        self.shaderList.setCurrentRow(currentRow)
+        self.shaderList.blockSignals(False)
+
+        shader = obj.shaders[currentRow]
+
+        for propertyName in self.shaderPropertyInputs.keys():
+            inputField = self.shaderPropertyInputs[propertyName]
+            if not hasattr(shader, propertyName):
+                continue
+
+            propertyValue = getattr(shader, propertyName)
+
+            inputField.blockSignals(True)
+            if type(inputField) == QLineEdit:
+                inputField.setText(str(propertyValue))
+            elif type(inputField) == QPushButton and inputField.isCheckable():
+                inputField.setChecked(propertyValue)
+            elif type(inputField) == QPushButton:
+                 inputField.setStyleSheet(f'QPushButton {{ background-color: rgb({propertyValue.r}, {propertyValue.g}, {propertyValue.b}); color: black; }}')
+            inputField.blockSignals(False)
+    
     def setupTransformPanel(self):
         ## Setup transform properties region
         self.transformPropertiesRegion = QWidget()
@@ -363,88 +844,47 @@ class MainWindow(QMainWindow):
         ## Setup transform tabs
         self.transformTabs = QTabWidget()
         self.transformTabs.setStyleSheet('margin: 0;')
-        
-        # region # position tab
-        self.positionTab = QWidget()
-        self.positionTab.setStyleSheet('margin: 0;')
-        self.positionTab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        self.positionTabLayout = QVBoxLayout(self.positionTab)
-        self.positionTabLayout.setAlignment(Qt.AlignTop)
-        self.transformTabs.addTab(self.positionTab, '↖')
 
-        self.positionXInput = QLineEdit(self)
-        self.positionXInput.setStyleSheet('background-color: #dedede;')
-        self.positionXInput.setPlaceholderText('X')
-        self.positionXInput.editingFinished.connect(lambda: self.transformSelected('pos'))
-        self.positionTabLayout.addWidget(self.positionXInput)
-        
-        self.positionYInput = QLineEdit(self)
-        self.positionYInput.setStyleSheet('background-color: #dedede;')
-        self.positionYInput.setPlaceholderText('Y')
-        self.positionYInput.editingFinished.connect(lambda: self.transformSelected('pos'))
-        self.positionTabLayout.addWidget(self.positionYInput)
+        self.transformTabsDict = {}
 
-        self.positionZInput = QLineEdit(self)
-        self.positionZInput.setStyleSheet('background-color: #dedede;')
-        self.positionZInput.setPlaceholderText('Z')
-        self.positionZInput.editingFinished.connect(lambda: self.transformSelected('pos'))
-        self.positionTabLayout.addWidget(self.positionZInput)
-        # endregion
-        
-        # region # rotation tab
-        self.rotationTab = QWidget()
-        self.rotationTab.setStyleSheet('margin: 0;')
-        self.rotationTab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        self.rotationTabLayout = QVBoxLayout(self.rotationTab)
-        self.rotationTabLayout.setAlignment(Qt.AlignTop)
-        self.transformTabs.addTab(self.rotationTab, '⤾')
+        for transform in ['pos', 'rot', 'scale']:
+            tab = QWidget()
+            tab.setStyleSheet('margin: 0;')
+            tab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            tabLayout = QVBoxLayout(tab)
+            tabLayout.setAlignment(Qt.AlignTop)
+            self.transformTabs.addTab(tab, {
+                'pos': '↖',
+                'rot': '⤾',
+                'scale': '↔',
+            }[transform])
+            self.transformTabsDict[transform] = []
+            
+            for direction in range(3):
+                directionText = ['X', 'Y', 'Z'][direction]
 
-        self.rotationXInput = QLineEdit(self)
-        self.rotationXInput.setStyleSheet('background-color: #dedede;')
-        self.rotationXInput.setPlaceholderText('X')
-        self.rotationXInput.editingFinished.connect(lambda: self.transformSelected('rot'))
-        self.rotationTabLayout.addWidget(self.rotationXInput)
-        
-        self.rotationYInput = QLineEdit(self)
-        self.rotationYInput.setStyleSheet('background-color: #dedede;')
-        self.rotationYInput.setPlaceholderText('Y')
-        self.rotationYInput.editingFinished.connect(lambda: self.transformSelected('rot'))
-        self.rotationTabLayout.addWidget(self.rotationYInput)
+                property = QWidget()
+                property.setStyleSheet('margin: 0;')
+                propertyLayout = QHBoxLayout()
+                property.setLayout(propertyLayout)
+                tabLayout.addWidget(property)
+                
+                dragButton = DragButton(directionText)
+                dragButton.setStyleSheet('background-color: #ffffff; padding-left: 2px; padding-right: 2px; margin: 0;')
+                ## NOTE # Default values are used because python evaluates them at define time not call time
+                dragButton.onDrag.connect(lambda x, y, currentTransform=transform, currentDirection=direction: self.dragTransform((x, y), False, currentTransform, currentDirection))
+                dragButton.clicked.connect(lambda currentTransform=transform, currentDirection=direction: self.dragTransform((0, 0), True, currentTransform, currentDirection))
+                propertyLayout.addWidget(dragButton)
+                
+                inputField = QLineEdit(self)
+                inputField.setStyleSheet('background-color: #dedede;')
+                inputField.setPlaceholderText(directionText)
+                ## NOTE # Default values are used because python evaluates them at define time not call time
+                inputField.editingFinished.connect(lambda currentTransform=transform, currentDirection=direction, currentField=inputField: self.transformSelected(currentTransform, currentDirection, currentField))
+                propertyLayout.addWidget(inputField)
+                
+                self.transformTabsDict[transform].append(inputField)
 
-        self.rotationZInput = QLineEdit(self)
-        self.rotationZInput.setStyleSheet('background-color: #dedede;')
-        self.rotationZInput.setPlaceholderText('Z')
-        self.rotationZInput.editingFinished.connect(lambda: self.transformSelected('rot'))
-        self.rotationTabLayout.addWidget(self.rotationZInput)
-        # endregion
-        
-        # region # scale tab
-        self.scaleTab = QWidget()
-        self.scaleTab.setStyleSheet('margin: 0;')
-        self.scaleTab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        self.scaleTabLayout = QVBoxLayout(self.scaleTab)
-        self.scaleTabLayout.setAlignment(Qt.AlignTop)
-        self.transformTabs.addTab(self.scaleTab, '↔')
-
-        self.scaleXInput = QLineEdit(self)
-        self.scaleXInput.setStyleSheet('background-color: #dedede;')
-        self.scaleXInput.setPlaceholderText('X')
-        self.scaleXInput.editingFinished.connect(lambda: self.transformSelected('scale'))
-        self.scaleTabLayout.addWidget(self.scaleXInput)
-        
-        self.scaleYInput = QLineEdit(self)
-        self.scaleYInput.setStyleSheet('background-color: #dedede;')
-        self.scaleYInput.setPlaceholderText('Y')
-        self.scaleYInput.editingFinished.connect(lambda: self.transformSelected('scale'))
-        self.scaleTabLayout.addWidget(self.scaleYInput)
-
-        self.scaleZInput = QLineEdit(self)
-        self.scaleZInput.setStyleSheet('background-color: #dedede;')
-        self.scaleZInput.setPlaceholderText('Z')
-        self.scaleZInput.editingFinished.connect(lambda: self.transformSelected('scale'))
-        self.scaleTabLayout.addWidget(self.scaleZInput)
-        # endregion
-        
         self.transformPropertiesRegionLayout.addWidget(self.transformTabs)
         
         self.setTransformsButton = QPushButton('Set transforms')
@@ -463,13 +903,57 @@ class MainWindow(QMainWindow):
         self.texelTab = QWidget()
         self.texelTab.setStyleSheet('margin: 0;')
         self.texelTab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.texelTabLayout = QVBoxLayout(self.texelTab)
+        self.texelTabLayout.setAlignment(Qt.AlignTop)
         self.viewportModesTabs.addTab(self.texelTab, 'O')
         
         # region # debug tab
         self.debugTab = QWidget()
         self.debugTab.setStyleSheet('margin: 0;')
         self.debugTab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.debugTabLayout = QVBoxLayout(self.debugTab)
+        self.debugTabLayout.setAlignment(Qt.AlignTop)
         self.viewportModesTabs.addTab(self.debugTab, 'X')
+    
+    def setupLightPanel(self):
+        ## Setup light properties region
+        self.lightPropertiesRegion = QWidget()
+        self.lightPropertiesRegion.setStyleSheet('background-color: #efefef; border-radius: 4px; margin: 4px;')
+        self.lightPropertiesRegion.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.lightPropertiesRegionLayout = QVBoxLayout()
+        self.lightPropertiesRegionLayout.setAlignment(Qt.AlignTop)
+        self.lightPropertiesRegion.setLayout(self.lightPropertiesRegionLayout)
+        self.lightPanel.panelLayout.addWidget(self.lightPropertiesRegion)
+
+        self.lightStrengthField = QLineEdit(self)
+        self.lightStrengthField.setStyleSheet('background-color: #dedede;')
+        self.lightStrengthField.setPlaceholderText('Strength')
+        self.lightStrengthField.editingFinished.connect(self.adjustLightStrength)
+        self.lightPropertiesRegionLayout.addWidget(self.lightStrengthField)
+    
+    def refreshLightProperties(self):
+        self.lightStrengthField.blockSignals(True)
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if not obj or obj.type != 'light':
+            self.lightStrengthField.setText('')
+            return
+        self.lightStrengthField.setText(str(obj.strength))
+        self.lightStrengthField.blockSignals(False)
+    
+    def adjustLightStrength(self):
+        try:
+            strength = float(self.lightStrengthField.text())
+            obj = self.scene.getObject(self.sharedState.selectedObject)
+            if not obj or obj.type != 'light':
+                return
+            
+            obj.strength = strength
+            
+            self.sharedState.sceneChanged = True
+        except ValueError:
+            pass
+
+        self.refreshLightProperties()
     
     def refreshCameraProperties(self):
         self.cameraLengthField.blockSignals(True)
@@ -479,7 +963,7 @@ class MainWindow(QMainWindow):
     
     def adjustCamLength(self):
         try:
-            length = int(self.cameraLengthField.text())
+            length = float(self.cameraLengthField.text())
             camera = self.scene.camera
 
             camera.length = length
@@ -503,7 +987,7 @@ class MainWindow(QMainWindow):
         self.cameraLengthField = QLineEdit(self)
         self.cameraLengthField.setStyleSheet('background-color: #dedede;')
         self.cameraLengthField.setPlaceholderText('Length')
-        self.cameraLengthField.editingFinished.connect(lambda: self.adjustCamLength())
+        self.cameraLengthField.editingFinished.connect(self.adjustCamLength)
         self.cameraPropertiesRegionLayout.addWidget(self.cameraLengthField)
 
         self.selectBoundCameraButton = QPushButton('Select camera')
@@ -612,44 +1096,25 @@ class MainWindow(QMainWindow):
     def refreshTransformProperties(self):
         obj = self.scene.getObject(self.sharedState.selectedObject)
         
-        self.positionXInput.blockSignals(True)
-        self.positionYInput.blockSignals(True)
-        self.positionZInput.blockSignals(True)
-        self.rotationXInput.blockSignals(True)
-        self.rotationYInput.blockSignals(True)
-        self.rotationZInput.blockSignals(True)
-        self.scaleXInput.blockSignals(True)
-        self.scaleYInput.blockSignals(True)
-        self.scaleZInput.blockSignals(True)
-        if obj != None:
-            self.positionXInput.setText(str(obj.position.x))
-            self.positionYInput.setText(str(obj.position.y))
-            self.positionZInput.setText(str(obj.position.z))
-            self.rotationXInput.setText(str(math.degrees(obj.rotation.x)))
-            self.rotationYInput.setText(str(math.degrees(obj.rotation.y)))
-            self.rotationZInput.setText(str(math.degrees(obj.rotation.z)))
-            self.scaleXInput.setText(str(obj.scale.x))
-            self.scaleYInput.setText(str(obj.scale.y))
-            self.scaleZInput.setText(str(obj.scale.z))
-        else:
-            self.positionXInput.setText('')
-            self.positionYInput.setText('')
-            self.positionZInput.setText('')
-            self.rotationXInput.setText('')
-            self.rotationYInput.setText('')
-            self.rotationZInput.setText('')
-            self.scaleXInput.setText('')
-            self.scaleYInput.setText('')
-            self.scaleZInput.setText('')
-        self.positionXInput.blockSignals(False)
-        self.positionYInput.blockSignals(False)
-        self.positionZInput.blockSignals(False)
-        self.rotationXInput.blockSignals(False)
-        self.rotationYInput.blockSignals(False)
-        self.rotationZInput.blockSignals(False)
-        self.scaleXInput.blockSignals(False)
-        self.scaleYInput.blockSignals(False)
-        self.scaleZInput.blockSignals(False)
+        for tab in self.transformTabsDict.keys():
+            for i, input in enumerate(self.transformTabsDict[tab]):
+                input.blockSignals(True)
+                if obj != None:
+                    val = {
+                        'pos': obj.position,
+                        'rot': obj.rotation,
+                        'scale': obj.scale,
+                    }[tab][i]
+                    
+                    print(val)
+                    if tab == 'rot':
+                        val = math.degrees(val)
+                    print(val)
+
+                    input.setText(f'{val:.3f}')
+                else:
+                    input.setText('')
+                input.blockSignals(False)
     
     # MARK: > REFRESH RENDER
     ## Refresh render properties
@@ -669,51 +1134,56 @@ class MainWindow(QMainWindow):
             
             optionInput.blockSignals(False)
     
+    def dragTransform(self, delta, first, transform, direction):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        if obj != None:
+            if first:
+                print('setting')
+                self.originalTransforms = [copy.deepcopy(obj.position), copy.deepcopy(obj.rotation), copy.deepcopy(obj.scale)]
+            deltaX = delta[0]
+            if transform == 'pos':
+                print('before:', self.originalTransforms[0])
+                scaled = deltaX / 60
+                transforms = copy.deepcopy(self.originalTransforms[0])
+                # print(obj.position)
+                # print(scaled)
+                obj.position[direction] = transforms[direction] + scaled
+                # print(obj.position)
+                print('after:', self.originalTransforms[0])
+            if transform == 'rot':
+                scaled = deltaX / 2
+                obj.rotation[direction] = math.radians(math.degrees(self.originalTransforms[1][direction]) + scaled)
+            if transform == 'scale':
+                scaled = (deltaX / 60)
+                if scaled == -self.originalTransforms[2][direction]: scaled += 0.0001
+                obj.scale[direction] = self.originalTransforms[2][direction] + scaled
+            
+            self.sharedState.sceneChanged = True
+            self.refreshTransformProperties()
+    
     # MARK: > TRANSFORM SEL
     ## Transform selected object
-    def transformSelected(self, transform):
-        try:
-            ## Get selected object
-            obj = self.scene.getObject(self.sharedState.selectedObject)
-            
-            if obj != None:
-                originalPos = obj.position
-                originalRot = obj.rotation
-                originalScale = obj.scale
+    def transformSelected(self, transform, direction, field):
+        obj = self.scene.getObject(self.sharedState.selectedObject)
+        
+        if obj != None:
+            try:
                 if transform == 'pos':
-                    ## Get inputs
-                    x = float(self.positionXInput.text())
-                    y = float(self.positionYInput.text())
-                    z = float(self.positionZInput.text())
-                    
-                    obj.position = Vec3(x, y, z)
+                    obj.position[direction] = float(field.text())
                 elif transform == 'rot':
-                    ## Get inputs
-                    x = float(self.rotationXInput.text())
-                    y = float(self.rotationYInput.text())
-                    z = float(self.rotationZInput.text())
-            
-                    obj.rotation = Euler(math.radians(x), math.radians(y), math.radians(z))
+                    obj.rotation[direction] = math.radians(float(field.text()))
                 elif transform == 'scale':
-                    ## Get inputs
-                    x = float(self.scaleXInput.text())
-                    y = float(self.scaleYInput.text())
-                    z = float(self.scaleZInput.text())
-
-                    obj.scale = Scale(x, y, z)
-                
-                if originalPos != obj.position or originalRot != obj.rotation or originalScale != obj.scale:
-                    ## Trigger refresh
-                    self.refreshTransformProperties()
-                    self.sharedState.sceneChanged = True
-            else:
+                    obj.scale[direction] = float(field.text())
+            except ValueError:
                 self.refreshTransformProperties()
-        except ValueError:
-            self.refreshTransformProperties()
-            QMessageBox.warning(self, 'Error', 'Please enter valid numbers in all fields.')
+                QMessageBox.warning(self, 'Error', 'Please enter valid numbers in all fields.')
+            
+        self.refreshTransformProperties()
+        self.sharedState.sceneChanged = True
 
     def cancelRender(self):
         self.sharedState.renderCancelled = True
+        self.progressDialog.close()
 
     # MARK: > RENDER
     ## Render scene
@@ -736,6 +1206,7 @@ class MainWindow(QMainWindow):
     def completeRender(self, data):
         self.progressDialog.close()
         self.displayRenderedImage(data)
+        self.lastRender = data
     
     # MARK: > PROGRESS
     ## Update progress bars to show render progress
@@ -744,7 +1215,7 @@ class MainWindow(QMainWindow):
             
         self.progressDialog.setValue(int(avgProg * 100))
             
-        if all([val/total >= 0.99 for val in data.values()]):
+        if all([val/total == 1 for val in data.values()]):
             self.progressDialog.setLabelText('Merging ...')
         
         # print(f'Thread {key}: {data[key]/total}%')
@@ -756,30 +1227,58 @@ class MainWindow(QMainWindow):
     def handleViewportClick(self, x, y):
         if self.sharedState.engine != 'texel':
             return
-        ## Fire a ray through that pixel
+        
+        ## Fire a ray through the pixel
         pixelVec = self.tracer.pixelToVector(x, y)
         ray = self.tracer.getRay(pixelVec)
         
         ## Get the first object that the ray collides with
-        collisionInfo = self.tracer.getCollision(ray, lights=False, backCull=True)
+        collisionInfo = self.tracer.getCollision(ray, lights=True, backCull=False)
+        
         object = collisionInfo['object']
         
-        ## Compare original selected object and new object
-        originalObj = self.sharedState.selectedObject
-        newObj = object.id if object else -1
-        
-        ## Only change if they are not the same
-        if originalObj != newObj:
-            if object == None:
-                ## Ray did not hit anything
-                self.sharedState.selectedObject = -1
+        if self.facesMode:
+            if object == None or object.id != self.sharedState.selectedObject:
+                if not self.shiftHeld:
+                    self.sharedState.selectedFaces = []
             else:
-                self.sharedState.selectedObject = object.id
+                faceIndex = object.mesh.faces.index(collisionInfo['face'])
             
-            ## Trigger scene render
-            self.sharedState.sceneChanged = True
+                if self.shiftHeld:
+                    if faceIndex in self.sharedState.selectedFaces:
+                        self.sharedState.selectedFaces.remove(faceIndex)
+                    else:
+                        self.sharedState.selectedFaces.append(faceIndex)
+                else:
+                    if faceIndex in self.sharedState.selectedFaces:
+                        if len(self.sharedState.selectedFaces) > 1:
+                            self.sharedState.selectedFaces = [faceIndex]
+                        else:
+                            self.sharedState.selectedFaces = []
+                    else:
+                        self.sharedState.selectedFaces = [faceIndex]
+                        
+
+        else:
+            ## Compare original selected object and new object
+            originalObj = self.sharedState.selectedObject
+            newObj = object.id if object else -1
+            
+            ## Only change if they are not the same
+            if originalObj != newObj:
+                if object == None:
+                    ## Ray did not hit anything
+                    self.sharedState.selectedObject = -1
+                else:
+                    self.sharedState.selectedObject = object.id
+                
+        ## Trigger scene render
+        self.sharedState.sceneChanged = True
         
         self.refreshTransformProperties()
+        self.refreshLightProperties()
+        self.refreshShaderProperties()
+        self.refreshCameraProperties()
         
     
     # MARK: > DISPLAY IMG

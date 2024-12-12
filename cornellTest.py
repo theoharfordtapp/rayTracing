@@ -105,9 +105,6 @@ debug = Debug(scene=scene, options={
 })
 
 renderer = Photon(scene=scene, options={
-    'step': 20, ## TODO # Upscaling in post
-    'fillStep': True,
-    
     'bounces': 3,
     'samples': 2,
     

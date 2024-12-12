@@ -57,10 +57,21 @@ class Euler:
         self.y = y
         self.z = z
 
-    # MARK: > ADMIN
-    ## Convert to iterable
+    # MARK: ADMIN
     def __iter__(self) -> iter:
         return iter([self.x, self.y, self.z])
+    
+    def __getitem__(self, index) -> int:
+        return [self.x, self.y, self.z][index]
+    
+    def __setitem__(self, index, val) -> int:
+        match index:
+            case 0:
+                self.x = val
+            case 1:
+                self.y = val
+            case 2:
+                self.z = val
 
     ## MARK: > REPR
     def __repr__(self) -> str:
@@ -416,6 +427,17 @@ class RGB:
         else:
             raise TypeError(f'Cannot multiply RGB with type {type(other)}')
     
+    # MARK: > ARITHMETIC
+    def __truediv__(self, other):
+        if type(other) in [int, float]:
+            ## Divide each component by other
+            return RGB(self.r / other, self.g / other, self.b / other)
+        elif type(other) == RGB:
+            ## Divide component-wise
+            return RGB(self.r / other.r, self.g / other.g, self.b / other.b)
+        else:
+            raise TypeError(f'Cannot divide RGB by type {type(other)}')
+    
     def __add__(self, other):
         if type(other) == RGB:
             r = min(self.r + other.r, 255)
@@ -488,6 +510,15 @@ class Vec3:
     
     def __getitem__(self, index) -> int:
         return [self.x, self.y, self.z][index]
+    
+    def __setitem__(self, index, val) -> int:
+        match index:
+            case 0:
+                self.x = val
+            case 1:
+                self.y = val
+            case 2:
+                self.z = val
     
     ## MARK: > REPR
     def __repr__(self) -> str:
@@ -733,7 +764,8 @@ class Scene:
 # MARK: SHADER
 ## Shader structure providing information about an object's surface properties
 class Shader:
-    def __init__(self, debugColor=None, color=None, roughness=1, reflectivity=1, emissionStrength=0) -> None:
+    def __init__(self, name=None, debugColor=None, color=None, roughness=1.0, reflectivity=1.0, emissionStrength=0.0) -> None:
+        self.name = name if name is not None else 'New shader'
         self.debugColor = debugColor if debugColor is not None else RGB(200, 200, 200)
         self.color = color if color is not None else RGB(200, 200, 200)
         self.roughness = roughness
@@ -879,9 +911,21 @@ class Scale:
         self.y = y
         self.z = z
     
-    # MARK: > ADMIN
+    # MARK: ADMIN
     def __iter__(self) -> iter:
         return iter([self.x, self.y, self.z])
+    
+    def __getitem__(self, index) -> int:
+        return [self.x, self.y, self.z][index]
+    
+    def __setitem__(self, index, val) -> int:
+        match index:
+            case 0:
+                self.x = val
+            case 1:
+                self.y = val
+            case 2:
+                self.z = val
     
     # MARK: > REPR
     def __repr__(self) -> str:
@@ -1141,7 +1185,6 @@ class Object:
             self.position = Vec3(0, 0, 0)
             self.scale = Scale(1, 1, 1)
             self.rotation = Euler(0, 0, 0)
-            
 
     def boundingBox(self, faces=None):
         if self.type == 'mesh':

@@ -473,10 +473,8 @@ class Debug:
                 traces = []
                 ## Find the correct 'pixel' according to how many actual pixels there are per 'pixel'
                 if rendered.traces != {}:
-                    for (px, py) in rendered.traces.keys():
-                        if px <= x < px + rendered.options['step'] and py <= y < py + rendered.options['step']: # TODO # Sort this out
-                            traces = rendered.traces[(px, py)]
-                            break
+                    if (x, y) in rendered.traces.keys():
+                        traces = rendered.traces[(x, y)]
                 else:
                     pixelVec = tracer.pixelToVector(x, y)
                     ray = tracer.getRay(pixelVec)
@@ -520,10 +518,19 @@ class Photon:
         self.options = self.mergeDefaultOptions(options)
         self.rays = 0
     
+    @property
+    def scene(self):
+        return self.__scene
+    
+    @scene.setter
+    def scene(self, scene):
+        self.__scene = scene
+        self.transformedScene = scene
+    
     # MARK: > ADMIN
     ## Make sure all options exist even when unspecified
     def mergeDefaultOptions(self, options):
-        defaultOptions = {'debug': False, 'showProgress': True, 'bounces': 1, 'wait': True, 'samples': 1, 'ambient': RGB(20, 20, 20), 'bvh': True, 'debugOptions': {}, 'aabb': True, 'bvh': True, 'lights': True, 'debug': False, 'emissionSampleDensity': 4, 'transformBefore': True, 'threads': 4, 'width': 1440, 'height': 900}
+        defaultOptions = {'debug': False, 'bounces': 1, 'wait': True, 'samples': 1, 'ambient': RGB(20, 20, 20), 'bvh': True, 'debugOptions': {}, 'aabb': True, 'bvh': True, 'lights': True, 'debug': False, 'transformBefore': True, 'threads': 4, 'width': 1440, 'height': 900}
         for optionKey in defaultOptions.keys():
             if optionKey not in options.keys():
                 options[optionKey] = defaultOptions[optionKey]
@@ -533,7 +540,8 @@ class Photon:
     # MARK: > RAY CALC
     ## Get a pixel's position on image plane
     def pixelToVector(self, pixelX, pixelY) -> Vec3:
-        camera = self.transformedScene.camera
+        scene = self.transformedScene if self.options['transformBefore'] else self.scene
+        camera = scene.camera
         
         # ## Correct flipped image
         # pixelX = self.options['width']-pixelX
@@ -549,7 +557,8 @@ class Photon:
     
     ## Calculate initial ray
     def getRay(self, pixelVec) -> tuple[Vec3, Vec3]:
-        rayStart = self.transformedScene.camera.position
+        scene = self.transformedScene if self.options['transformBefore'] else self.scene
+        rayStart = scene.camera.position
         rayDirection = (pixelVec - rayStart).normalise()
         
         return Ray(rayStart, rayDirection, 1, None)
@@ -600,9 +609,14 @@ class Photon:
         collisionFace = None
         collisionDirection = None
         
-        for object in self.transformedScene.objects:
+        scene = self.transformedScene if self.options['transformBefore'] else self.scene
+
+        for object in scene.objects:
             ## Check if ray enters object AABB
-            if self.options['aabb'] and object.type in ['sphere', 'light', 'mesh']:
+            if (self.options['aabb'] or self.options['bvh']) and object.type in ['sphere', 'light', 'mesh']:
+                if not self.options['transformBefore']:
+                    object.bvh = object.buildBVH()
+                
                 bvh = object.bvh
                 
                 if not ray.entersAABB(bvh.box):
@@ -804,64 +818,14 @@ class Photon:
 
         return max(0, min(1, attenuation))
     
-    # MARK: > TRI AREA
-    ## Calculate the area of a triangle using the cross product method
-    def triangleArea(self, face):
-        vertex1, vertex2, vertex3 = face
-        
-        ## Calculate edge vectors
-        edge1 = vertex2 - vertex1
-        edge2 = vertex3 - vertex1
-        
-        ## Calculate the cross product
-        crossProduct = edge1.cross(edge2)
-        
-        ## Take half the magnitude as the area of the triangle
-        area = 0.5 * crossProduct.magnitude()
-        
-        return area
-    
-    # MARK: > SAMPLE POINTS
-    ## Calculate evenly distributed sample points within a triangle
-    def getSamplePoints(self, face, vertices, density):
-        ## Setup empty sample points list
-        samplePoints = []
-        
-        ## Get vertex vectors
-        v0, v1, v2 = [vertices[i] for i in face]
-        
-        ## Calculate the number of samples to take based on the density
-        numSamples = math.ceil(density * self.triangleArea([v0, v1, v2]))
-        
-        if self.options['debug']:
-            print('numSamples:', numSamples)
-
-        for _ in range(numSamples):
-            ## Take 2 random numbers between 0 and 1
-            r1, r2 = random.random(), random.random()
-            sqrtR1 = math.sqrt(r1)
-            
-            ## Calculate barycentric weights
-            ## Using calculations involving sqrtR1 and r2 (instead of just r1, r2, r3) as our weights, we get a more uniform distribution throughout the triangle
-            u = 1 - sqrtR1
-            v = sqrtR1 * (1 - r2)
-            w = sqrtR1 * r2
-
-            ## Convert to 3D cartesian coordinates
-            samplePoint = (v0 * u + v1 * v + v2 * w)
-
-            samplePoints.append(samplePoint)
-        
-        return samplePoints
-    
-    # MARK: > DIRECT LIGHT
-    ## Calculate the direct light intensity at a collision point
-    def getDirectLight(self, collisionInfo) -> float | int:
-        totalColor = RGB(0, 0, 0)
-        totalIntensity = 0
-        bouncePoint = collisionInfo['coordinate']
+    # MARK: > GET LIGHTS POS
+    ## Get the position of all light sources in the scene
+    def getAllLightsPos(self):
         lights = []
-        for object in self.transformedScene.objects:
+
+        scene = self.transformedScene if self.options['transformBefore'] else self.scene
+
+        for object in scene.objects:
             ## If object emits light
             if object.type == 'light' or (object.type == 'mesh' and any(shader.emissionStrength > 0 for shader in object.shaders)):
                 ## If object is emissive mesh
@@ -874,18 +838,30 @@ class Photon:
                                     if self.options['debug']:
                                         print('face:', faceIndex)
                                     face = object.mesh.faces[faceIndex]
-                                    strength = shader.emissionStrength / math.ceil((self.options['emissionSampleDensity'] * self.triangleArea([object.mesh.vertices[i] for i in face])))
+                                    strength = shader.emissionStrength
                                     color = shader.color
-                                    # pos = Mesh.centroid(object.mesh.vertices, face)
-                                    for pos in self.getSamplePoints(face, object.mesh.vertices, self.options['emissionSampleDensity']):
-                                        lights.append([pos, strength, color])
+                                    pos = Mesh.centroid(object.mesh.vertices, face)
+                                    lights.append([pos, strength, color])
                 ## If object is a light
                 else:
                     pos = object.position
                     strength = object.strength
                     color = object.shaders[0].color
                     lights.append([pos, strength, color])
+    
+        return lights
+    
+    # MARK: > DIRECT LIGHT
+    ## Calculate the direct light intensity at a collision point
+    def getDirectLight(self, collisionInfo) -> float | int:
+        totalColor = RGB(0, 0, 0)
+        totalIntensity = 0
+        bouncePoint = collisionInfo['coordinate']
         
+        lights = self.getAllLightsPos()
+
+        scene = self.transformedScene if self.options['transformBefore'] else self.scene
+
         for light in lights:
             pos = light[0]
             strength = light[1]
@@ -911,7 +887,7 @@ class Photon:
             
             ## Get reflection vector and view vector
             reflectionVector = ((normal * lightVector.dot(normal) * 2) - lightVector)
-            viewVector = (self.transformedScene.camera.position - collisionInfo['coordinate'])
+            viewVector = (scene.camera.position - collisionInfo['coordinate'])
             
             ## Get intensity of light on a perfectly specular material
             specularIntensity = max((0, (0 if reflectionVector.normalise().dot(viewVector.normalise()) < 0.96 else 1)))
@@ -1072,6 +1048,8 @@ color: {color}\n\n''')
         
         obj = trace.collisionInfo['object']
         
+        scene = self.transformedScene if self.options['transformBefore'] else self.scene
+        
         ## Object is light
         if obj.type == 'light':
             ## Get light color and strength
@@ -1080,7 +1058,7 @@ color: {color}\n\n''')
             color *= obj.strength
             
             ## Multiply by attenuation
-            distance = (trace.collisionInfo['coordinate'] - self.transformedScene.camera.position).magnitude()
+            distance = (trace.collisionInfo['coordinate'] - scene.camera.position).magnitude()
             directAttenuation = self.getAttenuation(distance)
             color *= directAttenuation
             
@@ -1094,7 +1072,7 @@ color: {color}\n\n''')
             color *= obj.shaders[obj.shaderIndices[obj.mesh.faces.index(trace.collisionInfo['face'])]].emissionStrength
             
             ## Multiply by attenuation
-            distance = (trace.collisionInfo['coordinate'] - self.transformedScene.camera.position).magnitude()
+            distance = (trace.collisionInfo['coordinate'] - scene.camera.position).magnitude()
             directAttenuation = self.getAttenuation(distance)
             color *= directAttenuation
             
@@ -1145,33 +1123,14 @@ color: {color}\n\n''')
     
     # MARK: > MERGE IMGS
     ## Merge images using mask
-    # def mergeImgs(self, imgs, resWidth, resHeight):
-    #     ## Setup the empty final image
-    #     totalImg = np.zeros((resHeight, resWidth, 4), np.uint8)
-
-    #     ## Iterate images
-    #     for img in imgs:
-    #         mask = img[..., 3] == 255
-
-    #         totalImg = np.where(mask[..., None], img, totalImg)
-        
-    #     return totalImg
-    
     def mergeImgs(self, stripes):
-        # img = stripes[0]
-        # stripes = stripes[1:]
-        
-        # for stripe in stripes:
-        #     img = np.concatenate((img, stripe))
-        
         img = np.vstack(stripes)
-        # img = np.concatenate(stripes, axis=0)
         
         return img
     
     # MARK: > RENDER
     ## Create a Rendered object based on the scene properties and data
-    def render(self, progressCallback=lambda _, __, ___: None, cancelCallback=lambda: False) -> Rendered:
+    def render(self, progressCallback=lambda _, __, ___: None, cancelCallback=lambda: False, returnType='rendered') -> Rendered | np.ndarray:
         print('beginning setup')
         
         ## Copy the scene so object transforms can be applied without repercussions
@@ -1196,43 +1155,27 @@ color: {color}\n\n''')
 
             print('built BVHs')
 
-        ## TODO # Use a start and end row index depending on threads
-        ## TODO # Merge with blocks as pixelOrder is unnecessary without step
         if self.options['height'] % self.options['threads'] != 0:
             raise ValueError('Number of threads must be a factor of image height')
         
         blockSize = self.options['height'] // self.options['threads']
-        # ## Generate the pixels to render based on render modes and resolution
-        # pixelOrderX = list(range(0, self.options['width'], (self.options['step'])))
-        # pixelOrderY = list(range(0, self.options['height'], (self.options['step'])))
-        # pixelOrder = []
-
-        # for i in pixelOrderX:
-        #     for j in pixelOrderY:
-        #         pixelOrder.append((i, j))
 
         ## Store information for Rendered object later
         totalTraces = {}
         self.rays = 0
         start = time.time()
 
-        ## TODO # This can go with new pixel order system
-        # blockSize = math.ceil(len(pixelOrder)/self.options['threads'])
-        # blocks = [pixelOrder[i:i+blockSize] for i in range(0, len(pixelOrder), blockSize)]
-
         renderQueue = Queue()
         threads = []
         
         self.threadsProgress = ThreadsProgress(callback=progressCallback, total=blockSize*self.options['width'])
 
-        # for threadId, block in enumerate(blocks):
-        #     thread = threading.Thread(target=self.renderPixels, args=(block, cancelCallback, threadId, renderQueue))
-        #     threads.append(thread)
-        #     thread.start()
         for threadId in range(self.options['threads']):
             thread = threading.Thread(target=self.renderPixels, args=(blockSize, cancelCallback, threadId, renderQueue))
             threads.append(thread)
             thread.start()
+        
+        print('started all threads')
         
         for thread in threads:
             thread.join()
@@ -1258,6 +1201,7 @@ color: {color}\n\n''')
             
         end = time.time()
         
+        print('merging')
         # image = self.mergeImgs(images, self.options['width'], self.options['height'])
         image = self.mergeImgs(stripes)
 
@@ -1270,13 +1214,18 @@ color: {color}\n\n''')
         
         print(totalTime)
         
-        return Rendered(image, totalTraces, self.options['width'], self.options['height'], totalTime, rays, self.options, failed=failed, engine='photon')
+        print('returning')
+        
+        if returnType == 'rendered':
+            return Rendered(image, totalTraces, self.options['width'], self.options['height'], totalTime, rays, self.options, failed=failed, engine='photon')
+        elif returnType == 'np':
+            return image
     
     # def renderPixels(self, pixelOrder, cancelCallback, id=None, queue=None):
     def renderPixels(self, blockSize, cancelCallback, id=None, queue=None):
         self.threadsProgress[id] = 0
-        # if self.options['debug']:
-        # print(f'Thread {id} started')
+        if self.options['debug']:
+            print(f'Thread {id} started')
         ## Setup image
         # image = np.zeros((self.options['height'], self.options['width'], 3), np.uint8)
         stripe = np.zeros((blockSize, self.options['width'], 3), np.uint8)
@@ -1309,7 +1258,6 @@ color: {color}\n\n''')
                     totalTraces[(pixelX, startRow+pixelY)] = traces
                     
                     ## Take a mean average of the traces colors
-                    # color = RGB.mean(samples).toTuple('bgr')
                     color = RGB.mean(samples).toTuple('bgr')
                     
                     # print(samples)
@@ -1334,14 +1282,14 @@ color: {color}\n\n''')
                     break
 
         timeToComplete = time.time()-startTime
-        # if self.options['debug']:
-        # print(f'Thread {id} done in {timeToComplete:.2f}')
+        if self.options['debug']:
+            print(f'Thread {id} done in {timeToComplete:.2f}')
         queue.put([id, stripe, totalTraces, failed])
 
 
 # MARK: THREADS PROGRESS
 ## Structure to allow tracking of threads progress
-class ThreadsProgress: ## TODO # return just one total size, not all
+class ThreadsProgress:
     def __init__(self, callback, total) -> None:
         ## Lock prevents race conditions
         ## Using `with self.lock` will lock the SharedState while the with block is being executed
@@ -1375,7 +1323,7 @@ class Texel:
     # MARK: > ADMIN
     ## Make sure all options exist even when unspecified
     def mergeDefaultOptions(self, options):
-        defaultOptions = {'attenuation': True, 'backCull': True, 'vertices': False, 'edges': False, 'selectedObject': -1, 'normals': False, 'ambient': RGB(0, 0, 0), 'width': 1440, 'height': 900}
+        defaultOptions = {'debug': False, 'selectedFaces': [], 'attenuation': True, 'backCull': True, 'vertices': False, 'lights': False, 'edges': False, 'axes': False, 'selectedObject': -1, 'normals': False, 'ambient': RGB(0, 0, 0), 'width': 1440, 'height': 900, 'lighting': False}
         for optionKey in defaultOptions.keys():
             if optionKey not in options.keys():
                 options[optionKey] = defaultOptions[optionKey]
@@ -1384,14 +1332,17 @@ class Texel:
 
     # MARK: > PROJECT
     ## Get vertex position on screen
-    def projectVertex(self, vertex):
+    def projectVertex(self, vertex, cullBehind=True):
         camera = self.transformedScene.camera
         
         ## Apply camera transforms so that the camera is effectively at (0, 0, 0), rotated by (0, 0, 0)
         transformedVertex = vertex.applyTransforms(camera.position * -1, Scale(1, 1, 1), camera.rotation * -1)
         
         ## Check vertex is not behind camera
-        if transformedVertex.z < 0.00001:
+        if transformedVertex.z < 0 and cullBehind:
+            return None
+
+        if transformedVertex.z == 0:
             return None
         
         ## Project the vertex onto the screen space
@@ -1404,16 +1355,43 @@ class Texel:
         pixelX = ((halfWidth + vecX)/(self.options['width']/self.options['height'])) * self.options['width']
         pixelY = (0.5 - vecY) * self.options['height']
         
-        ## Only return if pixel is actually on the desired image
-        if pixelX > self.options['width'] or pixelX < 0 or pixelY > self.options['height'] or pixelY < 0:
-            return None
-        
         return (int(pixelX), int(pixelY))
+
+    def renderAxes(self, image, clipOrigin=Vec3(0,0,0)):
+        for pos in range(int(clipOrigin.x-16), int(clipOrigin.x+16)):
+            negativePix = self.projectVertex(Vec3(pos, 0, clipOrigin.z-16), cullBehind=True)
+            positivePix = self.projectVertex(Vec3(pos, 0, clipOrigin.z+16), cullBehind=True)
+            print(negativePix, positivePix)
+            
+            if positivePix and negativePix:
+                color = (120, 120, 120)
+                if pos == 0:
+                        color = (180, 0, 0)
+                
+                cv2.line(image, negativePix, positivePix, color, 1)
+
+        for pos in range(int(clipOrigin.z-16), int(clipOrigin.z+16)):
+            negativePix = self.projectVertex(Vec3(clipOrigin.x-16, 0, pos), cullBehind=True)
+            positivePix = self.projectVertex(Vec3(clipOrigin.x+16, 0, pos), cullBehind=True)
+            
+            if positivePix and negativePix:
+                color = (120, 120, 120)
+                if pos == 0:
+                        color = (0, 0, 180)
+                
+                cv2.line(image, negativePix, positivePix, color, 1)
+        
+        negativeYPix = self.projectVertex(Vec3(0, -8, 0), cullBehind=True)
+        positiveYPix = self.projectVertex(Vec3(0, 8, 0), cullBehind=True)
+        
+        if positiveYPix and negativeYPix:
+            cv2.line(image, negativeYPix, positiveYPix, (0, 180, 0), 1)
 
     # MARK: RENDER
     ## Render a simple rasterised image of a scene with projection
     def render(self):
-        print('beginning setup')
+        if self.options['debug']:
+            print('beginning setup')
         
         ## Copy the scene so object transforms can be applied without repercussions
         self.transformedScene = deepcopy(self.scene)
@@ -1428,8 +1406,8 @@ class Texel:
                 object.setTransforms()
         
         ## Setup a photon instance to assist with more accurate shading
-        if self.options['attenuation'] or self.options['backcull']:
-            photon = Photon(scene=self.transformedScene)
+        if self.options['attenuation'] or self.options['backcull'] or self.options['lighting']:
+            photon = Photon(scene=self.transformedScene, options={'transformBefore': False})
 
         ## Setup image to work on
         # image = np.zeros((self.options['height'], self.options['width'], 3), np.uint8)
@@ -1438,33 +1416,50 @@ class Texel:
         ## Start timing render
         start = time.time()
 
+        if self.options['axes']:
+            self.renderAxes(image, self.transformedScene.camera.position)
+
         for obj in self.transformedScene.objects:
-            if obj == self.transformedScene.camera and self.options['selectedObject'] == obj.id and self.options['edges']:
-                cv2.rectangle(image, (0, 0), (self.options['width']-1, self.options['height']-1), (0, 100, 255), 3)
             if obj.type == 'sphere':
                 ## Project 3D vector to screenspace point
                 projectedPoint = self.projectVertex(obj.position)
                 
-                if projectedPoint:
-                    ## Calculate a screenspace radius by projecting a circumference point
-                    projectedCircumferencePoint = self.projectVertex(obj.position + Vec3(obj.scale.x/2, 0, 0))
+                ## Calculate a screenspace radius by projecting a circumference point
+                projectedCircumferencePoint = self.projectVertex(obj.position + Vec3(obj.scale.x/2, 0, 0))
+                
+                if projectedPoint and projectedCircumferencePoint:
+                    dx = abs(projectedCircumferencePoint[0] - projectedPoint[0])
+                    dy = abs(projectedCircumferencePoint[1] - projectedPoint[1])
+                    screenspaceRadius = round(math.sqrt(dx**2 + dy**2))
                     
-                    if projectedCircumferencePoint:
-                        dx = abs(projectedCircumferencePoint[0] - projectedPoint[0])
-                        dy = abs(projectedCircumferencePoint[1] - projectedPoint[1])
-                        screenspaceRadius = round(math.sqrt(dx**2 + dy**2))
+                    color = obj.shaders[0].color
+                    shadedColor = color
+                    if self.options['lighting']:
+                        ## Get closest light source
+                        lights = photon.getAllLightsPos()
+                        closestLight = [1000000, 0, self.options['ambient']]
+                        for light in lights:
+                            dist = (light[0] - obj.position).magnitude()
+                            strength = light[1]
+                            color = light[2]
+                            if dist < closestLight[0]:
+                                closestLight = [dist, strength, color]
                         
-                        color = obj.shaders[0].color
-                        shadedColor = color
-                        if self.options['attenuation']:
-                            ## Get attenuation
-                            dist = (obj.position - self.transformedScene.camera.position).magnitude()
-                            attenuation = photon.getAttenuation(dist)
-                            
-                            ## Get shaded color
-                            shadedColor = color * attenuation
+                        attenuation = photon.getAttenuation(closestLight[0])
+                        strength = closestLight[1]
+                        color = closestLight[2]
                         
-                        cv2.circle(image, projectedPoint, screenspaceRadius, shadedColor.toTuple('bgr'), -1)
+                        ## Get shaded color
+                        shadedColor = (shadedColor * (self.options['ambient']/255) * attenuation * (strength / 100)) * color
+                    if self.options['attenuation']:
+                        ## Get attenuation
+                        dist = (obj.position - self.transformedScene.camera.position).magnitude()
+                        attenuation = photon.getAttenuation(dist)
+                        
+                        ## Get shaded color
+                        shadedColor = shadedColor * attenuation
+                    
+                    cv2.circle(image, projectedPoint, screenspaceRadius, shadedColor.toTuple('bgr'), -1)
             elif obj.type == 'mesh':
                 for face in obj.mesh.faces:
                     vertices = [
@@ -1472,8 +1467,8 @@ class Texel:
                         for index in face
                     ]
                     projected = [self.projectVertex(vertex) for vertex in vertices]
-                    ## Make sure all vertices are on the screen and in front of the camera
-                    if not any([vertex == None for vertex in projected]):
+
+                    if all([pix != None for pix in projected]):
                         center = Mesh.centroid(vertices, [0, 1, 2])
                         facePlane = photon.getFacePlane(vertices)
                         if facePlane.normal.dot((self.transformedScene.camera.position - center)) < 0:
@@ -1487,6 +1482,8 @@ class Texel:
                         
                         ## Display object color
                         color = obj.shaders[obj.shaderIndices[obj.mesh.faces.index(face)]].color
+                        
+                        color += self.options['ambient']
 
                         if self.options['normals']:
                             ## Display red/blue depending on normal direction
@@ -1495,16 +1492,35 @@ class Texel:
                             elif normalDirection == 'toward':
                                 color = RGB(0, 0, 230)
 
-                        shadedColor = color
+                        elif obj.mesh.faces.index(face) in self.options['selectedFaces']:
+                            color = RGB(255, 228, 157)
 
+                        shadedColor = color
+                        if self.options['lighting']:
+                            ## Get closest light source
+                            lights = photon.getAllLightsPos()
+                            closestLight = [1000000, 1, self.options['ambient']]
+                            for light in lights:
+                                dist = (light[0] - obj.position).magnitude()
+                                strength = light[1]
+                                color = light[2]
+                                if dist < closestLight[0]:
+                                    closestLight = [dist, strength, color]
+                            
+                            attenuation = photon.getAttenuation(closestLight[0])
+                            strength = closestLight[1]
+                            color = closestLight[2]
+                            
+                            ## Get shaded color
+                            shadedColor = shadedColor = (shadedColor * (self.options['ambient']/255) * attenuation * (strength / 20)) * color
                         if self.options['attenuation']:
                             ## Get attenuation
-                            center = Mesh.centroid(vertices, [0, 1, 2])
-                            dist = (center - self.transformedScene.camera.position).magnitude()
+                            dist = (obj.position - self.transformedScene.camera.position).magnitude()
                             attenuation = photon.getAttenuation(dist)
                             
                             ## Get shaded color
-                            shadedColor = color * attenuation
+                            shadedColor = shadedColor * attenuation
+                        
                         ## Draw face between three vertices
                         cv2.fillPoly(image, np.int32([projected]), shadedColor.toTuple('bgr'))
                         
@@ -1523,7 +1539,27 @@ class Texel:
                             if obj.id == self.options['selectedObject']:
                                 vertexColor = (0, 100, 255)
                             for vertex in projected:
-                                cv2.circle(image, vertex, 1, color=vertexColor, thickness=-1)
+                                cv2.circle(image, vertex, 3, color=vertexColor, thickness=-1)
+            elif obj.type == 'light' and self.options['lights']:
+                projectedPoint = self.projectVertex(obj.position)
+                
+                ## Calculate a screenspace radius by projecting a circumference point
+                projectedCircumferencePoint = self.projectVertex(obj.position + Vec3(obj.scale.x/2, 0, 0))
+                
+                if projectedPoint and projectedCircumferencePoint:
+                    dx = abs(projectedCircumferencePoint[0] - projectedPoint[0])
+                    dy = abs(projectedCircumferencePoint[1] - projectedPoint[1])
+                    screenspaceRadius = round(math.sqrt(dx**2 + dy**2))
+                    
+                    color = (0, 0, 0)
+                    ## Make selected light have orange circumference
+                    if obj.id == self.options['selectedObject']:
+                        color = (0, 100, 255)
+
+                    cv2.circle(image, projectedPoint, screenspaceRadius, color=color, thickness=1)
+
+        if self.options['selectedObject'] == self.transformedScene.camera.id and self.options['edges']:
+            cv2.rectangle(image, (0, 0), (self.options['width']-1, self.options['height']-1), (0, 100, 255), 3)
             
         ## Calculate time to render
         end = time.time()
