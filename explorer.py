@@ -6,13 +6,12 @@
 # (Explorer)
 #
 # NOTE # Comments with `MARK` in them are purely IDE-related. They have no relevance to the code.
-# once aprone a timothy there was a dukey manholecover bestowed aprone a billy jewan lober theat shes not a real girklfeind
 
 # MARK: IMPORTS
 import copy
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QFileDialog, QListWidget,
-    QLineEdit, QTabWidget, QSizePolicy, QProgressDialog, QMessageBox, QScrollArea, QAction, QMenu, QColorDialog,
+    QLineEdit, QTabWidget, QSizePolicy, QProgressDialog, QMessageBox, QScrollArea, QAction, QMenu, QColorDialog, QListWidgetItem
 )
 from T3DE import Scene, RGB, Shader, Vec3, Euler, Scale, Camera, Light, Sphere, Cube, Object, Mesh
 from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot, Qt
@@ -41,6 +40,8 @@ class SharedState:
         self.__renderCancelled = False
         self.__vertices = False
         self.__selectedFaces = []
+        self.__texelWidth = 1440
+        self.__texelHeight = 900
     
     # MARK: > SCENE CHANGED
     @property
@@ -52,6 +53,28 @@ class SharedState:
     def sceneChanged(self, sceneChanged):
         with self.lock:
             self.__sceneChanged = sceneChanged
+    
+    # MARK: > WIDTH
+    @property
+    def texelWidth(self):
+        with self.lock:
+            return self.__texelWidth
+
+    @texelWidth.setter
+    def texelWidth(self, texelWidth):
+        with self.lock:
+            self.__texelWidth = texelWidth
+    
+    # MARK: > HEIGHT
+    @property
+    def texelHeight(self):
+        with self.lock:
+            return self.__texelHeight
+
+    @texelHeight.setter
+    def texelHeight(self, texelHeight):
+        with self.lock:
+            self.__texelHeight = texelHeight
     
     # MARK: > SCENE CHANGED
     @property
@@ -240,6 +263,9 @@ class ViewportThread(QThread):
                 self.texel.options['normals'] = self.sharedState.normals
                 self.texel.options['vertices'] = self.sharedState.vertices
                 self.texel.options['selectedFaces'] = self.sharedState.selectedFaces
+
+                self.texel.options['width'] = self.sharedState.texelWidth
+                self.texel.options['height'] = self.sharedState.texelHeight
 
                 engine = self.texel if self.sharedState.engine == 'texel' else self.debug
                 
@@ -476,6 +502,12 @@ class MainWindow(QMainWindow):
         self.cameraPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.controlsLayout.addWidget(self.cameraPanel)
         self.setupCameraPanel()
+
+        ## Setup object panel
+        self.objectPanel = CollapsiblePanel('Object')
+        self.objectPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.controlsLayout.addWidget(self.objectPanel)
+        self.setupObjectPanel()
         
         ## Setup shader panel
         self.shaderPanel = CollapsiblePanel('Shader')
@@ -514,6 +546,9 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key_F:
             self.toggleFacesMode()
 
+        if event.key() == Qt.Key_Backspace:
+            self.deleteObject()
+
     def keyReleaseEvent(self, event):
         if not event.modifiers() & Qt.ShiftModifier:
             self.shiftHeld = False
@@ -535,15 +570,16 @@ class MainWindow(QMainWindow):
         obj.bvh = obj.buildBVH()
         
         self.refreshTransformProperties()
+        self.refreshObjectList()
         self.sharedState.sceneChanged = True
         
         print(self.scene.objects)
     
     def newScene(self):
         self.scene = Scene()
-        Camera(self.scene, position=Vec3(0, 0, -8))
-        Cube(self.scene, position=Vec3(0, 0, 0))
-        Light(self.scene, position=Vec3(0, 3, 0))
+        Camera(self.scene, name='Camera', position=Vec3(0, 0, -8))
+        Cube(self.scene, name='Cube', position=Vec3(0, 0, 0))
+        Light(self.scene, name='Light', position=Vec3(0, 3, 0))
 
         self.tracer.scene = self.scene
         self.renderer.scene = self.scene
@@ -554,29 +590,36 @@ class MainWindow(QMainWindow):
 
     def openScene(self):
         filepath = QFileDialog.getOpenFileName(self, "Open Scene", "", "JSON (*.json)")[0]
-        self.scene = Scene.fromJSON(filepath)
-        
-        ## Build BVH for all objects
-        for obj in self.scene.objects:
-            obj.bvh = obj.buildBVH()
-        
-        self.tracer.scene = self.scene
-        self.renderer.scene = self.scene
-        self.texel.scene = self.scene
-        self.debug.scene = self.scene
-        
-        self.sharedState.sceneChanged = True
+        if filepath:
+            self.scene = Scene.fromJSON(filepath)
+            
+            ## Build BVH for all objects
+            for obj in self.scene.objects:
+                obj.bvh = obj.buildBVH()
+            
+            self.tracer.scene = self.scene
+            self.renderer.scene = self.scene
+            self.texel.scene = self.scene
+            self.debug.scene = self.scene
+            
+            self.sharedState.sceneChanged = True
+            
+            self.refreshShaderProperties()
+            self.refreshTransformProperties()
+            self.refreshRenderProperties()
+            self.refreshLightProperties()
+            self.refreshCameraProperties()
     
     def saveRender(self):
         filepath = QFileDialog.getSaveFileName(self, "Save Render", "", "PNG (*.png);;JPEG (*.jpg, *.jpeg)")[0]
-        
-        cv2.imwrite(self.lastRender, filepath)
+        if filepath:
+            cv2.imwrite(filepath, self.lastRender)
     
     def saveScene(self):
         # filepath = QFileDialog.getOpenFileName()[0]
         filepath = QFileDialog.getSaveFileName(self, "Save Scene", "", "JSON (*.json)")[0]
-        
-        self.scene.saveJSON(filepath)
+        if filepath:
+            self.scene.saveJSON(filepath)
     
     def deleteObject(self):
         obj = self.scene.getObject(self.sharedState.selectedObject)
@@ -612,19 +655,19 @@ class MainWindow(QMainWindow):
         self.shaderPanel.panelLayout.addWidget(self.shaderList)
 
         buttonLayout = QHBoxLayout()
-        self.assignShaderButton = QPushButton("Assign")
-        self.assignShaderButton.clicked.connect(self.assignShader) # IMPLEMENT
         self.addShaderButton = QPushButton("Add")
         self.addShaderButton.clicked.connect(self.addShader)
         self.removeShaderButton = QPushButton("Remove")
         self.removeShaderButton.clicked.connect(self.removeShader)
-        buttonLayout.addWidget(self.assignShaderButton)
         buttonLayout.addWidget(self.addShaderButton)
         buttonLayout.addWidget(self.removeShaderButton)
         self.shaderPanel.panelLayout.addLayout(buttonLayout)
         
+        self.assignShaderButton = QPushButton("Assign")
+        self.assignShaderButton.clicked.connect(self.assignShader)
+        self.shaderPanel.panelLayout.addWidget(self.assignShaderButton)
         self.facesModeButton = QPushButton("Faces")
-        self.facesModeButton.clicked.connect(self.toggleFacesMode) # IMPLEMENT
+        self.facesModeButton.clicked.connect(self.toggleFacesMode)
         self.facesModeButton.setCheckable(True)
         self.shaderPanel.panelLayout.addWidget(self.facesModeButton)
 
@@ -665,6 +708,13 @@ class MainWindow(QMainWindow):
             if inputField:
                 self.shaderPropertyInputs[propertyName] = inputField
                 self.shaderPropertiesRegionLayout.addWidget(inputField)
+    
+        self.iorField = QLineEdit(self)
+        self.iorField.setPlaceholderText('IOR')
+        self.iorField.setText('1')
+        self.iorField.editingFinished.connect(self.updateShaderProperties)
+        self.iorField.setStyleSheet('QLineEdit { background-color: #dedede; padding-top: 1px; padding-bottom: 1px; } QLineEdit:hover { background-color: #efdfe1; }')
+        self.shaderPanel.panelLayout.addWidget(self.iorField)
     
     def addShader(self):
         obj = self.scene.getObject(self.sharedState.selectedObject)
@@ -735,7 +785,6 @@ class MainWindow(QMainWindow):
         if currentRow < 0:
             return
 
-        print(self.shaderList.currentRow())
         shader = obj.shaders[currentRow]
 
         currentColor = getattr(shader, propertyName)
@@ -780,6 +829,17 @@ class MainWindow(QMainWindow):
                     setattr(shader, propertyName, float(value))
             elif type(inputField) == QPushButton and inputField.isCheckable():
                 setattr(shader, propertyName, inputField.isChecked())
+        
+        ior = self.iorField.text()
+
+        if ior == '':
+            self.refreshShaderProperties()
+            return
+        
+        try:
+            obj.material.ior = float(ior)
+        except:
+            return
 
         self.sharedState.sceneChanged = True
         self.refreshShaderProperties()
@@ -797,6 +857,9 @@ class MainWindow(QMainWindow):
                 elif type(inputField) == QPushButton:
                     inputField.setStyleSheet('QPushButton {{ background-color: #ffffff; color: black; }}')
                 inputField.blockSignals(False)
+            self.iorField.blockSignals(True)
+            self.iorField.setText('')
+            self.iorField.blockSignals(False)
             return
         
         currentRow = self.shaderList.currentRow()
@@ -830,7 +893,55 @@ class MainWindow(QMainWindow):
             elif type(inputField) == QPushButton:
                  inputField.setStyleSheet(f'QPushButton {{ background-color: rgb({propertyValue.r}, {propertyValue.g}, {propertyValue.b}); color: black; }}')
             inputField.blockSignals(False)
+        
+        self.iorField.blockSignals(True)
+        self.iorField.setText(str(obj.material.ior))
+        self.iorField.blockSignals(False)
     
+    def setupObjectPanel(self):
+        self.objectList = QListWidget()
+        self.objectList.currentRowChanged.connect(lambda: self.changeSelectedObject(source='list'))
+        # self.objectList.currentRowChanged.connect(lambda: print(self.objectList.currentRow()))
+        self.objectPanel.panelLayout.addWidget(self.objectList)
+        
+        self.flipNormalsButton = QPushButton("Flip normals")
+        self.flipNormalsButton.clicked.connect(self.flipSelectedNormals)
+        self.objectPanel.panelLayout.addWidget(self.flipNormalsButton)
+        self.deleteObjectButton = QPushButton("Delete")
+        self.deleteObjectButton.clicked.connect(self.deleteObject)
+        self.objectPanel.panelLayout.addWidget(self.deleteObjectButton)
+        
+        self.refreshObjectList()
+    
+    def refreshObjectList(self):
+        self.objectList.clear()
+        selectedObj = self.sharedState.selectedObject
+        for i, obj in enumerate(self.scene.objects):
+            item = QListWidgetItem(obj.name)
+            item.setData(0, obj.name)
+            # item.setData(0, obj.id)
+            item.setData(1, obj.id)
+            self.objectList.addItem(item)
+            if obj.id == selectedObj:
+                self.objectList.blockSignals(True)
+                self.objectList.setCurrentRow(i)
+                self.objectList.blockSignals(False)
+        
+    
+    def changeSelectedObject(self, id=-1, source='viewport'):
+        if source == 'viewport':
+            self.sharedState.selectedObject = id
+            self.refreshObjectList()
+        elif source == 'list':
+            if not self.objectList.currentItem():
+                return
+            self.sharedState.selectedObject = self.objectList.currentItem().data(1)
+
+        self.sharedState.sceneChanged = True
+        self.refreshTransformProperties()
+        self.refreshShaderProperties()
+        self.refreshLightProperties()
+
     def setupTransformPanel(self):
         ## Setup transform properties region
         self.transformPropertiesRegion = QWidget()
@@ -990,16 +1101,6 @@ class MainWindow(QMainWindow):
         self.cameraLengthField.editingFinished.connect(self.adjustCamLength)
         self.cameraPropertiesRegionLayout.addWidget(self.cameraLengthField)
 
-        self.selectBoundCameraButton = QPushButton('Select camera')
-        self.selectBoundCameraButton.setStyleSheet('background-color: #ffffff; border-radius: 3px; margin: 0 6px 4px 6px;')
-        self.selectBoundCameraButton.clicked.connect(self.selectBoundCamera)
-        self.cameraPanel.panelLayout.addWidget(self.selectBoundCameraButton)
-
-    def selectBoundCamera(self):
-        self.sharedState.selectedObject = self.scene.camera.id
-        self.sharedState.sceneChanged = True
-        self.refreshTransformProperties()
-
     # MARK: > RENDER PANEL
     ## Setup the render panel
     def setupRenderPanel(self):
@@ -1068,6 +1169,24 @@ class MainWindow(QMainWindow):
                     val = input.isChecked()
                 
                 self.renderer.options[key] = val
+
+            width = self.renderer.options['width']
+            height = self.renderer.options['height']
+
+            ratio = width / height
+            
+            if ratio <= 1.6:
+                scaleFactor = 900 / height
+            else:
+                scaleFactor = 1440 / width
+
+            self.tracer.options['width'] = int(width*scaleFactor)
+            self.tracer.options['height'] = int(height*scaleFactor)
+            
+            self.sharedState.texelWidth = int(width*scaleFactor)
+            self.sharedState.texelHeight = int(height*scaleFactor)
+
+            self.sharedState.sceneChanged = True
         except ValueError:
             self.refreshRenderProperties()
     
@@ -1219,7 +1338,7 @@ class MainWindow(QMainWindow):
             self.progressDialog.setLabelText('Merging ...')
         
         # print(f'Thread {key}: {data[key]/total}%')
-        
+
     
     # MARK: > VPORT CLICK
     ## Handle when the viewport is clicked
@@ -1233,7 +1352,7 @@ class MainWindow(QMainWindow):
         ray = self.tracer.getRay(pixelVec)
         
         ## Get the first object that the ray collides with
-        collisionInfo = self.tracer.getCollision(ray, lights=True, backCull=False)
+        collisionInfo = self.tracer.getFirstCollision(ray, lights=True, backCull=False)
         
         object = collisionInfo['object']
         
@@ -1268,17 +1387,11 @@ class MainWindow(QMainWindow):
             if originalObj != newObj:
                 if object == None:
                     ## Ray did not hit anything
-                    self.sharedState.selectedObject = -1
+                    self.changeSelectedObject(-1, 'viewport')
                 else:
-                    self.sharedState.selectedObject = object.id
-                
-        ## Trigger scene render
-        self.sharedState.sceneChanged = True
+                    self.changeSelectedObject(object.id, 'viewport')
         
-        self.refreshTransformProperties()
-        self.refreshLightProperties()
-        self.refreshShaderProperties()
-        self.refreshCameraProperties()
+        self.sharedState.sceneChanged = True
         
     
     # MARK: > DISPLAY IMG
@@ -1287,6 +1400,8 @@ class MainWindow(QMainWindow):
     def displayRenderedImage(self, imageData):
         # Get dimensions
         height, width, _ = imageData.shape
+        
+        self.viewport.setFixedSize(width, height)
 
         ## Convert the NumPy array to a QImage
         # qImage = QImage(imageData.data, width, height, imageData.strides[0], QImage.Format_RGB888)

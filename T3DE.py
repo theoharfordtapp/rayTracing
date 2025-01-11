@@ -4,23 +4,19 @@
 # Theo HT
 #
 # (3D Engine)
-#
-# NOTE # Comments with `MARK` in them are purely IDE-related. They have no relevance to the code.
 
-# MARK: IMPORTS
-import math, random
 import trimesh
+import random
+import math
 import json
 import copy
 
 
-# MARK: MATRIX
 ## 9x9 matrix used to calculate rotations
 class Matrix9:
     def __init__(self, elements):
         self.elements = elements
     
-    # MARK: > ARITHMETIC
     def __mul__(self, other):
         ## Multiply by vector
         if type(other) == Vec3:
@@ -49,15 +45,55 @@ class Matrix9:
             raise TypeError("Matrix9 can only be multiplied by Vec3 or another Matrix9")
 
 
-# MARK: EULER
 ## Euler angle used to save rotation information
 class Euler:
     def __init__(self, x=0, y=0, z=0):
         self.x = x
         self.y = y
         self.z = z
+    
+    def __add__(self, other):
+        ## Add to other Euler
+        if type(other) == Euler:
+            return Euler(self.x + other.x, self.y + other.y, self.z + other.z)
+        else:
+            raise TypeError(f'Cannot add type {type(other)} to Euler')
 
-    # MARK: ADMIN
+    def __mul__(self, other):
+        ## Multiply by number
+        if type(other) in [float, int]:
+            return Euler(self.x * other, self.y * other, self.z * other)
+        else:
+            raise TypeError(f'Cannot multiply Euler with type {type(other)}')
+
+    ## Convert to matrix
+    def toMatrix(self):
+        ## Get trig values
+        cosX, sinX = math.cos(self.x), math.sin(self.x)
+        cosY, sinY = math.cos(self.y), math.sin(self.y)
+        cosZ, sinZ = math.cos(self.z), math.sin(self.z)
+
+        ## Create matrices
+        Rx = Matrix9([
+            1, 0, 0,
+            0, cosX, -sinX,
+            0, sinX, cosX
+        ])
+        Ry = Matrix9([
+            cosY, 0, sinY,
+            0, 1, 0,
+            -sinY, 0, cosY
+        ])
+        Rz = Matrix9([
+            cosZ, -sinZ, 0,
+            sinZ, cosZ, 0,
+            0, 0, 1
+        ])
+
+        ## Combine matrices
+        return Rz * Ry * Rx
+
+    ## Use euler as an iterable
     def __iter__(self) -> iter:
         return iter([self.x, self.y, self.z])
     
@@ -73,7 +109,6 @@ class Euler:
             case 2:
                 self.z = val
 
-    ## MARK: > REPR
     def __repr__(self) -> str:
         return f'◿ {self.x}, {self.y}, {self.z} ◺'
     
@@ -85,51 +120,7 @@ class Euler:
         
         return f'◿ {formattedX}, {formattedY}, {formattedZ} ◺'
 
-    # MARK: > ARITHMETIC
-    def __mul__(self, other):
-        ## Multiply by number
-        if type(other) in [float, int]:
-            return Euler(self.x * other, self.y * other, self.z * other)
-        else:
-            raise TypeError(f'Cannot multiply Euler with type {type(other)}')
-    
-    def __add__(self, other):
-        ## Add to other Euler
-        if type(other) == Euler:
-            return Euler(self.x + other.x, self.y + other.y, self.z + other.z)
-        else:
-            raise TypeError(f'Cannot add type {type(other)} to Euler')
-    
-    # MARK: > TO MATRIX
-    ## Convert to matrix
-    def toMatrix(self):
-        ## Get trig values
-        cos_x, sin_x = math.cos(self.x), math.sin(self.x)
-        cos_y, sin_y = math.cos(self.y), math.sin(self.y)
-        cos_z, sin_z = math.cos(self.z), math.sin(self.z)
 
-        ## Create matrices
-        Rx = Matrix9([
-            1, 0, 0,
-            0, cos_x, -sin_x,
-            0, sin_x, cos_x
-        ])
-        Ry = Matrix9([
-            cos_y, 0, sin_y,
-            0, 1, 0,
-            -sin_y, 0, cos_y
-        ])
-        Rz = Matrix9([
-            cos_z, -sin_z, 0,
-            sin_z, cos_z, 0,
-            0, 0, 1
-        ])
-
-        ## Combine matrices
-        return Rz * Ry * Rx
-
-
-# MARK: RAY
 ## Ray used for tracing paths
 class Ray:
     def __init__(self, start, direction, ior, object) -> None:
@@ -137,23 +128,90 @@ class Ray:
         self.direction = direction.normalise()
         self.ior = ior
         self.object = object
-    
-    # MARK: > REPR
-    def __repr__(self) -> str:
-        return f'<{self.start}, {self.direction}>'
-    
-    def __format__(self, formatSpec) -> str:
-        formattedStart = format(self.start, formatSpec)
-        formattedDirection = format(self.direction, formatSpec)
-        return f'<{formattedStart}, {formattedDirection}>'
-    
-    # MARK: > TO VEC3
+
+    ## Get distance along ray where a collision with a plane occurs
+    def getTPlane(self, plane):
+        ## Get ray and plane information
+        start = self.start
+        direction = self.direction
+        normal = plane.normal
+        origin = plane.position
+        
+        ## Equation to find the point on the ray which is also on the plane
+        t = (normal.dot(origin) - normal.dot(start))/(normal.dot(direction))
+        return t
+
+    ## Get distance along ray where a collision with a sphere occurs
+    def getTSphere(self, sphere):
+        ## Get ray and sphere information
+        center = sphere.position ## C
+        relativeStart = self.start - center ## L
+        direction = self.direction ## D
+        radius = sphere.radius ## r
+        
+        ## Find discriminant to check how many collision points
+        discriminant = (relativeStart.dot(direction)**2) - (relativeStart.dot(relativeStart)-(radius**2))
+        
+        ## Ray misses sphere
+        if discriminant < 0: return (None, None)
+
+        ## Get the distances along the ray (t) if they exist. t1 is the first solution, t2 the second.
+        ## If there is only one collision, there are still 2 solutions, but both are identical.
+        t1 = (relativeStart.dot(direction) * -1) - math.sqrt(discriminant)
+        t2 = (relativeStart.dot(direction) * -1) + math.sqrt(discriminant)
+
+        return (t1, t2)
+
+    ## Check if a ray ever enters a bounding box
+    def entersAABB(self, box):
+        t = [0, 0, 0]
+        
+        ## Iterate through all 3 axes
+        for axis in range(3):
+            ## Get the component of the origin and direction vectors along this axis
+            originComponent = self.start[axis]
+            directionComponent = self.direction[axis]
+            
+            ## Ray is perpendicular to this axis
+            if directionComponent == 0:
+                if originComponent < box[0][axis] or originComponent > box[1][axis]:
+                    ## If the ray is perpendicular to this axis and starts outside the box on this axis
+                    return False
+                
+                ## If the ray is perpendicular but starts within the box on this axis
+                t[axis] = (float('-inf'), float('inf'))
+                continue
+            
+            ## Get the component of the box's min and max coordinates on this axis
+            boxMinComponent = box[0][axis]
+            boxMaxComponent = box[1][axis]
+            
+            ## Get the t value where the ray intersects the box's walls on this axis
+            tEnterAxis = (boxMinComponent - originComponent)/directionComponent
+            tExitAxis = (boxMaxComponent - originComponent)/directionComponent
+            
+            ## Swap if the ray is going the other direction
+            if tEnterAxis > tExitAxis:
+                tEnterAxis, tExitAxis = tExitAxis, tEnterAxis
+            
+            t[axis] = (tEnterAxis, tExitAxis)
+        
+        ## Calculate where the ray enters and exits the box
+        tEnter = max([axis[0] for axis in t])
+        tExit = min([axis[1] for axis in t])
+        
+        ## Return if the ray enters the box before it exists and if it exits past the ray start point
+        return tEnter <= tExit and tExit > 0
+
+    ## Convert t distance into absolute vector
+    def pointOnRay(self, t):
+        return self.start + (self.direction*t)
+
     ## Convert ray to normalised vector
     def toVec3(self):
         return (self.pointOnRay(1) - self.start).normalise()
-    
-    # MARK: > TO DICT
-    ## Convert ray to a dictionary that can be stored for later use
+
+    ## Convert ray to a dictionary
     def toDict(self):
         ## Convert the current object to a dictionary
         objectDict = self.object.toDict() if self.object else None
@@ -165,9 +223,8 @@ class Ray:
             'ior': self.ior,
             'object': objectDict,
         }
-    
-    # MARK: > FROM DICT
-    ## Convert dictionary back to a ray
+
+    ## Convert dictionary to a ray
     @staticmethod
     def fromDict(data):
         ## Convert the object data back into an object
@@ -181,99 +238,29 @@ class Ray:
             object=object,
         )
     
-    # MARK: > GET T
-    ## Get distance along ray where a collision with a plane occurs
-    def getT(self, plane):
-        ## Get ray and plane information
-        startPoint = self.start
-        rayDirection = self.direction
-        normal = plane.normal
-        planePos = plane.position
-        
-        ## Simultaneous equation combining two equations: 1) check if collision is on plane, 2) get the distance along a ray for a certain collision
-        ## Calculates what point along the ray would be on the plane
-        t = (normal.dot(startPoint) - normal.dot(planePos))/((normal * -1).dot(rayDirection))
-        return t
-
-    ## Get distance along ray where a collision with a sphere occurs
-    def getTSphere(self, sphere):
-        ## Get ray and sphere information
-        startPoint = self.start
-        spherePos = sphere.position
-        startPointAbsolute = startPoint - spherePos
-        rayDirection = self.direction
-        sphereRad = sphere.radius
-        
-        ## Discriminant of the equation which solves for the point where a line and a sphere touch
-        ## If discriminant is positive, it touches twice (passes through the sphere)
-        ## If discriminant is 0, it touches once (just touches the edge of the sphere)
-        discriminant = (startPointAbsolute.dot(rayDirection)**2) - (startPointAbsolute.dot(startPointAbsolute)-(sphereRad**2))
-        
-        ## If discriminant is negative, it never touches the sphere
-        if discriminant < 0: return None
-
-        ## Get the distances along the ray (t) if at least one exists. t1 represents the first collision, t2 the second
-        t1 = (startPointAbsolute.dot(rayDirection) * -1) - math.sqrt(discriminant)
-        t2 = (startPointAbsolute.dot(rayDirection) * -1) + math.sqrt(discriminant)
-
-        return (t1, t2)
-
-    # MARK: CHECK AABB
-    ## Check if a ray ever enters a bounding box
-    def entersAABB(self, box):
-        tAxes = [0, 0, 0]
-        
-        ## Iterate through all 3 axes
-        for axis in range(3):
-            ## Get the component of the origin and direction vectors along this axis
-            originComponent = self.start[axis]
-            directionComponent = self.direction[axis]
-            
-            ## Ray is perpendicular to this axis (i.e. parallel to the faces of the box that lie perpendicular to this axis)
-            if directionComponent == 0:
-                ## Ray starts outside the box
-                if originComponent < box[0][axis] or originComponent > box[1][axis]:
-                    ## If the ray is perpendicular to this axis and starts without the box on this axis, then it can never intersect with the box at all
-                    return False
-                
-                ## If the ray is perpendicular but starts within the box on this axis, it will never intersect with the box on this axis
-                ## But it might intersect on the other axes, so we say it intersects with this axis at an infinite distance in both directions
-                tAxes[axis] = (float('-inf'), float('inf'))
-                continue
-            
-            ## Get the component of the box's min and max coordinates on this axis
-            boxMinComponent = box[0][axis]
-            boxMaxComponent = box[1][axis]
-            
-            ## Get the distance along the ray at which point the ray intersects with the box's min and max coordinates on this axis
-            tMin = (boxMinComponent - originComponent)/directionComponent
-            tMax = (boxMaxComponent - originComponent)/directionComponent
-            
-            ## Swap if the ray is going the other direction
-            if tMin > tMax:
-                tMin, tMax = tMax, tMin
-            
-            tAxes[axis] = (tMin, tMax)
-        
-        ## Calculate when the ray enters and exits the box
-        tEnter = max(tAxis[0] for tAxis in tAxes)
-        tExit = min(tAxis[1] for tAxis in tAxes)
-        
-        ## Return if the ray enters the box before it exists and if it exits in a positive direction
-        return tEnter <= tExit and tExit > 0
-
-    # MARK: > POINT
-    ## Convert t distance into absolute vector
-    def pointOnRay(self, t):
-        return self.start + (self.direction*t)
+    def __repr__(self) -> str:
+        return f'<{self.start}, {self.direction}>'
+    
+    def __format__(self, formatSpec) -> str:
+        formattedStart = format(self.start, formatSpec)
+        formattedDirection = format(self.direction, formatSpec)
+        return f'<{formattedStart}, {formattedDirection}>'
 
 
-# MARK: MATH OBJS
 ## Mathematically-represented plane object, instead of mesh
 class MathematicalPlane:
-    def __init__(self, position, normal) -> None:
-        self.position = position
-        self.normal = normal
+    def __init__(self, vertices) -> None:
+        self.position = vertices[0]
+        self.normal = self._normal(vertices)
+    
+    def _normal(self, vertices):
+        firstVec = vertices[1] - vertices[0]
+        secondVec = vertices[2] - vertices[0]
+        
+        ## Cross vectors to get plane normal
+        normalVec = firstVec.cross(secondVec)
+        
+        return normalVec
 
 
 ## Mathematically-represented sphere object, instead of mesh approximation
@@ -283,7 +270,6 @@ class MathematicalSphere:
         self.radius = radius
 
 
-# MARK: TRACE
 ## Node of a ray trace tree, used to store information about a ray trace
 class TraceTreeNode:
     def __init__(self, ray, collisionInfo, left=None, right=None) -> None:
@@ -292,30 +278,7 @@ class TraceTreeNode:
         self.left = left if left is not None else None
         self.right = right if right is not None else None
 
-    # MARK: > REPR
-    ## (Recursive)
-    def __repr__(self):
-        return self.repr(self, 0)
-            
-    def repr(self, node, depth=0, index=-1):
-        ## Base case
-        if node is None:
-            return
-        
-        ## Create text representation of node with correct indent level
-        indent = ' | ' * depth
-        text = f"{indent}{(str(index)+': ') if index >= 0 else ''}⟬\u001b[36m{node.ray:.2f}\u001b[0m, \u001b[33m({node.collisionInfo['coordinate']:.2f}, {node.collisionInfo['object'].name, node.collisionInfo['object'].type}, {node.collisionInfo['normal']:.2f}, {node.collisionInfo['direction']}, {node.collisionInfo['face']})\u001b[0m⟭\n"
-        
-        ## Recursion
-        if node.left is not None:
-            text += self.repr(node.left, depth + 1, index=0)
-        if node.right is not None:
-            text += self.repr(node.right, depth + 1, index=1)
-        
-        return text
-    
-    # MARK: > TO DICT
-    ## Convert trace tree node to a dictionary that can be stored for later use
+    ## Convert trace tree node to a dictionary
     def toDict(self):
         ## Get the dictionary representations of the left and right node
         leftNode = self.left.toDict() if self.left else None
@@ -340,9 +303,8 @@ class TraceTreeNode:
             'left': leftNode,
             'right': rightNode,
         }
-    
-    # MARK: > FROM DICT
-    ## Convert trace tree node data back into a trace tree node
+
+    ## Convert dictionary to a trace tree node
     @staticmethod
     def fromDict(data):
         ## Get the left and right node from dictionary data
@@ -380,8 +342,26 @@ class TraceTreeNode:
         
         return TraceTreeNode(ray, collisionInfo, leftNode, rightNode)
 
+    def __repr__(self):
+        return self.repr(self, 0)
+            
+    def repr(self, node, depth=0, index=-1):
+        if node is None:
+            return
+        
+        ## Create text representation of node with correct indent level
+        indent = ' | ' * depth
+        text = f"{indent}{(str(index)+': ') if index >= 0 else ''}⟬\u001b[36m{node.ray:.2f}\u001b[0m, \u001b[33m({node.collisionInfo['coordinate']:.2f}, {node.collisionInfo['object'].name, node.collisionInfo['object'].type}, {node.collisionInfo['normal']:.2f}, {node.collisionInfo['direction']}, {node.collisionInfo['face']})\u001b[0m⟭\n"
+        
+        ## Recursively get repr from next nodes
+        if node.left is not None:
+            text += self.repr(node.left, depth + 1, index=0)
+        if node.right is not None:
+            text += self.repr(node.right, depth + 1, index=1)
+        
+        return text
 
-# MARK: RGB
+
 ## RGB Color value
 class RGB:
     def __init__(self, r=random.randint(0,255), g=random.randint(0,255), b=random.randint(0,255)) -> None:
@@ -389,85 +369,33 @@ class RGB:
         self.g = g
         self.b = b
     
-    # MARK: > ADMIN
-    ## Convert to iterable
-    def __iter__(self) -> iter:
-        return iter([self.r, self.g, self.b])
-    
-    # MARK: > REPR
-    def __repr__(self) -> str:
-        return f'【{self.r}, {self.g}, {self.b}】'
-    
-    def __format__(self, format_spec):
-        if format_spec == 'h':
-            ## Format as hex if h specifier
-            return self.toHex()
-        
-        ## Format each part of the color based on the format specifier
-        formatted_r = format(self.r, format_spec)
-        formatted_g = format(self.g, format_spec)
-        formatted_b = format(self.b, format_spec)
-        
-        return f'【{formatted_r}, {formatted_g}, {formatted_b}】'
-
-    def pprint(self):
-        print('\tR: ' + str(self.r))
-        print('\tG: ' + str(self.g))
-        print('\tB: ' + str(self.b))
-        print('\tHex: ' + self.toHex())
-    
-    # MARK: > ARITHMETIC
-    def __mul__(self, other):
-        if type(other) in [int, float]:
-            ## Multiply each component by other
-            return RGB(self.r * other, self.g * other, self.b * other)
-        elif type(other) == RGB:
-            ## Multiply component-wise
-            return RGB(self.r * other.r, self.g * other.g, self.b * other.b)
-        else:
-            raise TypeError(f'Cannot multiply RGB with type {type(other)}')
-    
-    # MARK: > ARITHMETIC
-    def __truediv__(self, other):
-        if type(other) in [int, float]:
-            ## Divide each component by other
-            return RGB(self.r / other, self.g / other, self.b / other)
-        elif type(other) == RGB:
-            ## Divide component-wise
-            return RGB(self.r / other.r, self.g / other.g, self.b / other.b)
-        else:
-            raise TypeError(f'Cannot divide RGB by type {type(other)}')
-    
     def __add__(self, other):
+        ## Add to other RGB
         if type(other) == RGB:
-            r = min(self.r + other.r, 255)
-            g = min(self.g + other.g, 255)
-            b = min(self.b + other.b, 255)
-            return RGB(r, g, b)
+            return RGB(self.r + other.r, self.g + other.g, self.b + other.b).clamp()
         else:
             raise TypeError(f'Cannot add RGB to type {type(other)}')
 
-    # MARK: > TO HEX
-    ## Convert to hexadecimal color code
-    def toHex(self):
-        return f'#{self.r:02x}{self.g:02x}{self.b:02x}'
-    
-    # MARK: > TO TUPLE
-    ## Convert to tuple in different color spaces
-    def toTuple(self, space='rgb'):
-        ## BGR mostly used for cv2
-        if space == 'bgr':
-            return (self.b, self.g, self.r)
-        elif space == 'rgb':
-            return (self.r, self.g, self.b)
-        elif space == 'bgra':
-            return (self.b, self.g, self.r, 255)
-        elif space == 'rgba':
-            return (self.r, self.g, self.b, 255)
+    def __mul__(self, other):
+        ## Multiply by number
+        if type(other) in [int, float]:
+            return RGB(self.r * other, self.g * other, self.b * other)
+        ## Multiply by other RGB
+        elif type(other) == RGB:
+            return RGB(self.r * other.r, self.g * other.g, self.b * other.b)
         else:
-            raise TypeError(f'Color space {space} not recognised')
-    
-    # MARK: > MEAN
+            raise TypeError(f'Cannot multiply RGB with type {type(other)}')
+
+    def __truediv__(self, other):
+        ## Divide by number
+        if type(other) in [int, float]:
+            return RGB(self.r / other, self.g / other, self.b / other)
+        ## Divide by other RGB
+        elif type(other) == RGB:
+            return RGB(self.r / other.r, self.g / other.g, self.b / other.b)
+        else:
+            raise TypeError(f'Cannot divide RGB by type {type(other)}')
+
     ## Get the mean average of multiple colors
     @staticmethod
     def mean(colors):
@@ -486,53 +414,59 @@ class RGB:
         ## Return new RGB with the mean colors
         return RGB(mean_r, mean_g, mean_b).clamp()
 
-    # MARK: > CLAMP
     ## Make sure RGB value does not exceed (255, 255, 255)    
     def clamp(self):
         r = min(self.r, 255)
         g = min(self.g, 255)
         b = min(self.b, 255)
-        
+
         return RGB(r, g, b)
 
+    ## Convert to hexadecimal color code
+    def toHex(self):
+        return f'#{self.r:02x}{self.g:02x}{self.b:02x}'
 
-## MARK: VEC3
-# 3D Vector used for positional calculations
+    ## Convert to tuple in different color spaces
+    def toTuple(self, space='rgb'):
+        ## BGR mostly used for cv2
+        if space == 'bgr':
+            return (self.b, self.g, self.r)
+        elif space == 'rgb':
+            return (self.r, self.g, self.b)
+        elif space == 'bgra':
+            return (self.b, self.g, self.r, 255)
+        elif space == 'rgba':
+            return (self.r, self.g, self.b, 255)
+        else:
+            raise TypeError(f'Color space {space} not recognised')
+
+    ## Use RGB as iterable
+    def __iter__(self) -> iter:
+        return iter([self.r, self.g, self.b])
+
+    def __repr__(self) -> str:
+        return f'【{self.r}, {self.g}, {self.b}】'
+
+    def __format__(self, format_spec):
+        if format_spec == 'h':
+            ## Format as hex if h specifier
+            return self.toHex()
+        
+        ## Format each part of the color based on the format specifier
+        formatted_r = format(self.r, format_spec)
+        formatted_g = format(self.g, format_spec)
+        formatted_b = format(self.b, format_spec)
+        
+        return f'【{formatted_r}, {formatted_g}, {formatted_b}】'
+
+
+## 3D Vector used for positional calculations
 class Vec3:
     def __init__(self, x, y, z) -> None:
         self.x = x
         self.y = y
         self.z = z
-    
-    # MARK: ADMIN
-    def __iter__(self) -> iter:
-        return iter([self.x, self.y, self.z])
-    
-    def __getitem__(self, index) -> int:
-        return [self.x, self.y, self.z][index]
-    
-    def __setitem__(self, index, val) -> int:
-        match index:
-            case 0:
-                self.x = val
-            case 1:
-                self.y = val
-            case 2:
-                self.z = val
-    
-    ## MARK: > REPR
-    def __repr__(self) -> str:
-        return f'⟦{self.x}, {self.y}, {self.z}⟧'
-    
-    def __format__(self, formatSpec: str) -> str:
-        ## Format each component of the vector based on the format specifier
-        formattedX = format(self.x, formatSpec)
-        formattedY = format(self.y, formatSpec)
-        formattedZ = format(self.z, formatSpec)
-        
-        return f'⟦{formattedX}, {formattedY}, {formattedZ}⟧'
 
-    # MARK: > ARITHMETIC
     def __add__(self, other):
         return Vec3(self.x + other.x, self.y + other.y, self.z + other.z)
     
@@ -555,16 +489,14 @@ class Vec3:
         else:
             raise TypeError(f'Cannot divide Vec3 by type {type(other)}')
 
-    # MARK: > DOT
     ## Calculate the dot product of two vectors
     def dot(self, other):
         if type(other) == Vec3:
-            ## Return sum of product of each component
+            ## Sum components
             return self.x * other.x + self.y * other.y + self.z * other.z
         else:
             raise TypeError(f'Cannot dot Vec3 against type {type(other)}')
     
-    # MARK: > COMPONENT
     ## Calculate the component of a vector along the direction of another vector
     def component(self, other):
         if type(other) == Vec3:
@@ -572,7 +504,6 @@ class Vec3:
         else:
             raise TypeError(f'Cannot get component of Vec3 along type {type(other)}')
     
-    # MARK: > PROJECT
     ## Project a vector onto another, like a shadow
     def project(self, other):
         if type(other) == Vec3:
@@ -580,12 +511,10 @@ class Vec3:
         else:
             raise TypeError(f'Cannot project Vec3 onto type {type(other)}')
     
-    # MARK: > MAGNITUDE
     ## Calculate the magnitude of a vector with pythagoras
     def magnitude(self):
         return math.sqrt(self.x**2 + self.y**2 + self.z**2)
     
-    # MARK: > CROSS
     ## Calculate the cross product of self x other, in that order
     def cross(self, other):
         if type(other) == Vec3:
@@ -597,7 +526,6 @@ class Vec3:
         else:
             raise TypeError(f'Cannot cross Vec3 against type {type(other)}')
     
-    # MARK: > TRANSFORM
     ## Apply the given transforms, returning a new vector
     def applyTransforms(self, position=None, scale=None, rotation=None):
         ## Set defaults
@@ -614,48 +542,27 @@ class Vec3:
         newVec = newVec + position
 
         return newVec
-    
-    ## Set the given transforms, applying them permanently to self
-    def setTransforms(self, position=None, scale=None, rotation=None):
-        ## Set defaults
-        position = position if position != None else Vec3(0, 0, 0)
-        scale = scale if scale != None else Scale(0, 0, 0)
-        rotation = rotation if rotation != None else Euler(0, 0, 0)
-        
-        ## Get the vector with transforms applied
-        newVec = self.applyTransforms(position, scale, rotation)
 
-        ## Set the new coordinates
-        self.x = newVec.x
-        self.y = newVec.y
-        self.z = newVec.z
-
-    # MARK: > NORMALISE
     ## Normalise vector, making magnitude equal to 1
     def normalise(self):
         return self / self.magnitude()
 
-    # MARK: > PERPENDICULAR
     ## Check if vector is perpendicular to other vector
     def perpendicular(self, other):
         ## Account for floating point inacuracies by using small floats instead of zero
         return -0.000001 < self.dot(other) < 0.000001
 
-    # MARK: > PARALLEL
     ## Check if vector is parallel to other vector
     def parallel(self, other):
-        ## The magnitude of the cross product is smaller the closer the two vectors are to parallel
         ## Account for floating point inacuracies by using small floats instead of zero
         return -0.000001 < self.cross(other).magnitude() < 0.000001
-    
-    # MARK: > ANGLE
+
     ## Get the angle between two vectors
     def angle(self, other):
         dotProd = self.dot(other)
         magnitudesProd = self.magnitude() * other.magnitude()
         return math.acos(dotProd/magnitudesProd)
 
-    # MARK: > FLIP
     ## Flip a vector over another vector
     def flipComponent(self, direction):
         if type(direction) != Vec3:
@@ -667,20 +574,45 @@ class Vec3:
         ## Get the projection (shadow) of the ray on the direction vector
         projection = self.project(directionUnit)
 
-        ## Subtract two times the projection from the original vector to get the flipped vector
+        ## Subtract double the projection from the original vector to get the flipped vector
         flipped = self - (projection * 2)
         
         return flipped
 
+    ## Use Vec3 as iterable
+    def __iter__(self) -> iter:
+        return iter([self.x, self.y, self.z])
+    
+    def __getitem__(self, index) -> int:
+        return [self.x, self.y, self.z][index]
+    
+    def __setitem__(self, index, val) -> int:
+        match index:
+            case 0:
+                self.x = val
+            case 1:
+                self.y = val
+            case 2:
+                self.z = val
+    
+    def __repr__(self) -> str:
+        return f'⟦{self.x}, {self.y}, {self.z}⟧'
+    
+    def __format__(self, formatSpec: str) -> str:
+        ## Format each component of the vector based on the format specifier
+        formattedX = format(self.x, formatSpec)
+        formattedY = format(self.y, formatSpec)
+        formattedZ = format(self.z, formatSpec)
+        
+        return f'⟦{formattedX}, {formattedY}, {formattedZ}⟧'
 
-# MARK: SCENE
-## Scene structure used to collect the objects information
+
+## Scene structure used to collect objects together
 class Scene:
     def __init__(self) -> None:
         self.objects = []
         self.camera = None
-    
-    # MARK: > GET OBJ
+
     ## Get an object given its id
     def getObject(self, id):
         for obj in self.objects:
@@ -690,8 +622,7 @@ class Scene:
         ## No object found
         return None
     
-    # MARK: > TO DICT
-    ## Convert scene data to dict to save
+    ## Convert scene to dictionary
     def toDict(self):
         ## Combine camera and objects data
         data = {
@@ -701,8 +632,7 @@ class Scene:
         
         return data
     
-    # MARK: > FROM DICT
-    ## Load scene data from dict
+    ## Convert dictionary to scene
     @staticmethod
     def fromDict(data):
         ## Create an empty scene to add all of the scene data to
@@ -738,9 +668,11 @@ class Scene:
         
         return scene
 
-    # MARK > SAVE JSON
     ## Save the scene data to a JSON file
     def saveJSON(self, filepath):
+        for object in self.objects:
+            object.buildBVH()
+        
         ## Get the dictionary representation of the scene
         data = self.toDict()
         
@@ -748,8 +680,7 @@ class Scene:
         with open(filepath, 'w') as f:
             json.dump(data, f)
     
-    # MARK > FROM JSON
-    ## Create a scene from a JSON file
+    ## Load a scene from a JSON file
     @staticmethod
     def fromJSON(filepath):
         ## Load the data from JSON
@@ -761,7 +692,7 @@ class Scene:
         
         return scene
 
-# MARK: SHADER
+
 ## Shader structure providing information about an object's surface properties
 class Shader:
     def __init__(self, name=None, debugColor=None, color=None, roughness=1.0, reflectivity=1.0, emissionStrength=0.0) -> None:
@@ -771,9 +702,8 @@ class Shader:
         self.roughness = roughness
         self.reflectivity = reflectivity
         self.emissionStrength = emissionStrength
-    
-    # MARK: > TO DICT
-    ## Convert shader data to dictionary to save
+
+    ## Convert shader to dictionary
     def toDict(self):
         return {
             'debugColor': [*self.debugColor],
@@ -783,8 +713,8 @@ class Shader:
             'emissionStrength': self.emissionStrength,
         }
 
-    # MARK: > FROM DICT
-    ## Get dictionary data and convert to shader
+
+    ## Convert dictionary to shader
     @staticmethod
     def fromDict(data):
         return Shader(
@@ -795,25 +725,22 @@ class Shader:
             emissionStrength=data.get('emissionStrength', 0),
         )
 
-    # MARK: > REPR
     def __repr__(self) -> str:
         return f'debugColor: {self.debugColor}\ncolor: {self.color}\nroughness: {self.roughness}\nreflectivity: {self.reflectivity}\nemissionStrength: {self.emissionStrength}\n'
 
-# MARK: MATERIAL
-## Matierial structure providing information about an object's internal properties
+
+## Material structure providing information about an object's internal properties
 class Material:
     def __init__(self, ior=1) -> None:
         self.ior = ior
-    
-    # MARK: > TO DICT
-    ## Convert material data to dictionary to save
+
+    ## Convert material to dictionary
     def toDict(self):
         return {
             'ior': self.ior,
         }    
 
-    # MARK: > FROM DICT
-    ## Get dictionary data and convert to material
+    ## Convert dictionary to material
     @staticmethod
     def fromDict(data):
         return Material(
@@ -821,15 +748,35 @@ class Material:
         )
         
 
-# MARK: MESH
 ## Mesh structure providing an object's faces and the vertices that they are made up of
 class Mesh:
     def __init__(self, vertices, faces) -> None:
         self.vertices = vertices
         self.faces = faces
 
-    # MARK: > FROM STL
-    ## Convert STL to a mesh
+    ## Flip the normals of a mesh
+    def flipNormals(self):
+        ## Reverse order of all faces so that they go anticlockwise
+        for i, face in enumerate(self.faces):
+            self.faces[i] = face[::-1]
+    
+    ## Get the vertices associated with a face via indices
+    def faceVertices(self, face):
+        return [self.vertices[face[i]] for i in range(0, 3)]
+
+    ## Get the centroid (center coordinate) of three vertices
+    @staticmethod
+    def centroid(v0, v1, v2):
+        ## Calculate mean of each component to get centroid
+        centroid = Vec3(
+            (v0.x + v1.x + v2.x) / 3,
+            (v0.y + v1.y + v2.y) / 3,
+            (v0.z + v1.z + v2.z) / 3
+        )
+
+        return centroid
+
+    ## Convert STL to mesh
     @staticmethod
     def fromSTL(filename):
         ## Use trimesh to load the mesh data
@@ -845,23 +792,21 @@ class Mesh:
         
         return newMesh
 
-    # MARK: > CENTROID
-    ## Get the centroid (center coordinate) of three vertices
-    @staticmethod
-    def centroid(vertices, face):
-        ## Get the vertex coordinates from the face made up of vertex indices
-        v0, v1, v2 = [vertices[vertex] for vertex in face]
+    ## Convert mesh to dictionary
+    def toDict(self):
+        return {
+            'vertices': [[*vec] for vec in self.vertices],
+            'faces': [[int(vertex) for vertex in face] for face in self.faces],
+        }
 
-        ## Calculate mean of each component to get centroid
-        centroid = Vec3(
-            (v0.x + v1.x + v2.x) / 3,
-            (v0.y + v1.y + v2.y) / 3,
-            (v0.z + v1.z + v2.z) / 3
+    ## Convert dictionary to mesh
+    @staticmethod
+    def fromDict(data):
+        return Mesh(
+            vertices=[Vec3(*vec) for vec in data.get('vertices', [])],
+            faces=[tuple([int(vertex) for vertex in face]) for face in data.get('faces', [])],
         )
 
-        return centroid
-
-    # MARK: > REPR
     def __repr__(self):
         ## Create empty return string
         returnString = ''
@@ -877,33 +822,8 @@ class Mesh:
             returnString += str(face) + '\n'
             
         return returnString
-    
-    # MARK: > FLIP NORMALS
-    ## Flip the normals of a mesh
-    def flipNormals(self):
-        ## Reverse order of all faces so that they go anticlockwise
-        for i, face in enumerate(self.faces):
-            self.faces[i] = face[::-1]
-    
-    # MARK: > TO DICT
-    ## Convert mesh to dictionary data to store for later use
-    def toDict(self):
-        return {
-            'vertices': [[*vec] for vec in self.vertices],
-            'faces': [[int(vertex) for vertex in face] for face in self.faces],
-        }
-
-    # MARK: > FROM DICT
-    ## Convert dictionary data back to a mesh
-    @staticmethod
-    def fromDict(data):
-        return Mesh(
-            vertices=[Vec3(*vec) for vec in data.get('vertices', [])],
-            faces=[tuple([int(vertex) for vertex in face]) for face in data.get('faces', [])],
-        )
 
 
-# MARK: SCALE
 ## Scale structure representing a 3-dimensional scale factor
 class Scale:
     def __init__(self, x, y, z) -> None:
@@ -911,7 +831,27 @@ class Scale:
         self.y = y
         self.z = z
     
-    # MARK: ADMIN
+    def __mul__(self, other):
+        ## Multiply by number
+        if type(other) in [float, int]:
+            return Scale(self.x * other, self.y * other, self.z * other)
+        ## Multiply by other scale
+        elif type(other) == Scale:
+            return Scale(self.x * other.x, self.y * other.y, self.z * other.z)
+        else:
+            raise TypeError(f'Cannot multiply Scale with type {type(other)}')
+    
+    def __truediv__(self, other):
+        ## Divide by number
+        if type(other) in [float, int]:
+            return Scale(self.x / other, self.y / other, self.z / other)
+        ## Divide by other scale
+        elif type(other) == Scale:
+            return Scale(self.x / other.x, self.y / other.y, self.z / other.z)
+        else:
+            raise TypeError(f'Cannot divide Scale by type {type(other)}')
+
+    ## Use scale as iterable
     def __iter__(self) -> iter:
         return iter([self.x, self.y, self.z])
     
@@ -927,7 +867,6 @@ class Scale:
             case 2:
                 self.z = val
     
-    # MARK: > REPR
     def __repr__(self) -> str:
         return f'❰{self.x}, {self.y}, {self.z}❱'
     
@@ -938,24 +877,8 @@ class Scale:
         formattedZ = format(self.z, formatSpec)
         
         return f'❰{formattedX}, {formattedY}, {formattedZ}❱'
-    
-    # MARK: > ARITHMETIC
-    def __truediv__(self, other):
-        if type(other) in [float, int]:
-            return Scale(self.x/other, self.y/other, self.z/other)
-        else:
-            raise TypeError(f'Cannot divide Scale by type {type(other)}')
-    
-    def __mul__(self, other):
-        if type(other) in [float, int]:
-            return Scale(self.x * other, self.y * other, self.z * other)
-        elif type(other) == Scale:
-            return Scale(self.x * other.x, self.y * other.y, self.z * other.z)
-        else:
-            raise TypeError(f'Cannot multiply Scale with type {type(other)}')
 
 
-# MARK: BVHNODE
 ## Node of a Bounding Volume Hierarchy structure
 class BVHNode:
     def __init__(self, box=(None, None), left=None, right=None, faces=None):
@@ -964,7 +887,6 @@ class BVHNode:
         self.right = right
         self.faces = faces
 
-    # MARK: > MERGE
     ## Merge two BVH Nodes together
     def merge(self, other):
         ## Take the minimum of each component
@@ -981,13 +903,8 @@ class BVHNode:
         )
 
         return (new_min, new_max)
-    
-    # MARK: > REPR
-    def __repr__(self) -> str:
-        return f'[{self.box[0]}, {self.box[1]}], {self.left}, {self.right}, {self.faces[:4] if self.faces else "not a leaf"}\n'
 
-    # MARK: > TO DICT
-    ## Convert BVHNode to dictionary data to save and store for later use
+    ## Convert BVHNode to dictionary
     def toDict(self):
         ## Make sure faces are in int, not np.int64, if faces exist
         faces = [[int(vertex) for vertex in face] for face in self.faces] if self.faces != None else None
@@ -1004,22 +921,24 @@ class BVHNode:
             
             'faces': faces,
         }
-    
-    # MARK: > FROM DICT
-    ## Convert dictionary data to BVHNode
+
+    ## Convert dictionary to BVHNode
     @staticmethod
     def fromDict(data):
         try:
-            loadedLeft = data.get('left', {})
+            ## Create nodes from left and right dictionaries
+            loadedLeft = data.get('left', None)
             if loadedLeft != None:
                 loadedLeft = BVHNode.fromDict(loadedLeft)
-            loadedRight = data.get('right', {})
+            loadedRight = data.get('right', None)
             if loadedRight != None:
                 loadedRight = BVHNode.fromDict(loadedRight)
         except RecursionError:
+            ## Load default BVH for left and right if recursion goes too deep
             loadedLeft = BVHNode()
             loadedRight = BVHNode()
 
+        ## Combine data into BVHNode
         return BVHNode(
             box=[Vec3(*vec) if vec != None else None for vec in data.get('box', [None, None])],
             
@@ -1029,11 +948,14 @@ class BVHNode:
             faces=data.get('faces', None),
         )
 
+    def __repr__(self) -> str:
+        return f'[{self.box[0]}, {self.box[1]}], {self.left}, {self.right}, {self.faces[:4] if self.faces else "not a leaf"}\n'
+
 
 class Object:
     def __init__(self, scene, name=None, mesh=None, position=None) -> None:
         self.__scene = scene
-        self.id = len(self.scene.objects)
+        self.id = max([-1] + [obj.id for obj in self.scene.objects]) + 1
         self.name = name if name is not None else 'Empty'
         self.position = position if position is not None else Vec3(0, 0, 0)
         self.rotation = Euler(0, 0, 0)
@@ -1048,18 +970,13 @@ class Object:
         self.scene.objects.append(self)
         self._defaultShaders()
     
-    @property
-    def scene(self):
-        return self.__scene
-    
-    @scene.setter
-    def scene(self, scene):
-        self.__scene = scene
-        self.id = len(self.__scene.objects)
-    
+    ## Load default shaders upon object creation
     def _defaultShaders(self):
+        ## Create shader
         defaultShader = Shader()
         self.shaders = [defaultShader]
+
+        ## Set shader indices depending on object type
         if self.mesh != None:
             self.shaderIndices = [0] * len(self.mesh.faces)
         elif self.type in ['light', 'sphere', 'camera', 'empty']:
@@ -1067,35 +984,130 @@ class Object:
         else:
             self.shaderIndices = []
     
+    ## Build object's BVH based on mesh
+    def buildBVH(self, faces=None, depth=0, maxTrianglesPerLeaf=8, maxDepth=100):
+        ## Just get outer bounding box if object is not a mesh
+        if self.type in ['sphere', 'light', 'empty', 'camera']:
+            return BVHNode(box=self.boundingBox())
+        
+        ## Use object's faces if no list provided
+        if faces == None: faces = copy.deepcopy(self.mesh.faces)
+
+        box = self.boundingBox(faces)
+
+        ## Get the size of the box on all axes
+        diffs = []
+        for axis in range(3):
+            diff = abs(box[0][axis]-box[1][axis])
+            diffs.append(diff)
+
+        ## If the box is too small or contains too few faces, return the leaf node
+        if len(faces) <= maxTrianglesPerLeaf or any(diff <= 0.0006 for diff in diffs) or depth >= maxDepth:
+            return BVHNode(box=box, faces=faces)
+
+        axis = depth % 3
+        
+        ## Sort the faces by their position on the axis
+        faces.sort(key=lambda face: Mesh.centroid(*[self.mesh.vertices[index] for index in face])[axis])
+
+        ## Split the faces into left and right halves
+        mid = len(faces) // 2
+        leftFaces = faces[:mid]
+        rightFaces = faces[mid:]
+
+        ## Get the node for each half recursively
+        leftNode = self.buildBVH(leftFaces, depth+1, maxTrianglesPerLeaf, maxDepth)
+        rightNode = self.buildBVH(rightFaces, depth+1, maxTrianglesPerLeaf, maxDepth)
+
+        ## Combine the boxes into one bigger box
+        boundingBox = leftNode.merge(rightNode)
+        
+        return BVHNode(box=boundingBox, left=leftNode, right=rightNode)
+    
+    ## Apply a shader to given faces
     def setShader(self, shader, faces=None):
         if faces == None:
+            ## Apply shader to all faces
             if self.type in ['light', 'sphere', 'camera', 'empty']:
+                ## If object is not a mesh, just change the first shader in the shaders list
                 self.shaders[0] = shader
                 self.shaderIndices = [0]
                 return
             else:
+                ## Get a list of all of the indices of the faces
                 faces = list(range(len(self.mesh.faces)))
 
         if shader not in self.shaders:
             self.shaders.append(shader)
+
         shaderIndex = self.shaders.index(shader)
             
         for faceIndex in faces:
             self.shaderIndices[faceIndex] = shaderIndex
     
-    def loadShadersFromJSON(self, filepath):
-        with open(filepath, 'r') as file:
-            data = json.load(file)
-
-        shadersJSON= data.get("shaders", {})
-        facesJSON = data.get("faces", {})
-        if len(facesJSON) > len(self.mesh.faces):
-            facesJSON = facesJSON[:len(self.mesh.faces)]
-        
-        self.shaders = [shader for shader in shadersJSON.values()]
-        self.shaderIndices = [shaderIndex for shaderIndex in facesJSON.values()]
+    ## Get the shader of a given face
+    def getShader(self, face=None):
+        shader = None
+        if self.type == 'mesh':
+            index = self.mesh.faces.index(face)
+            shaderIndex = self.shaderIndices[index]
+            shader = self.shaders[shaderIndex]
+        elif self.type in ['light, camera', 'empty', 'sphere']:
+            shader = self.shaders[0]
+        return shader
     
+    ## Apply the transforms to the mesh permanently
+    def setTransforms(self):
+        ## Setting transforms is irrelevant if not a mesh
+        if self.type == 'mesh':
+            ## Adjust the mesh's vertices list for the transformations
+            newVertices = []
+            for vertex in self.mesh.vertices:
+                ## Get the vertex with transforms applied
+                newVertex = vertex.applyTransforms(self.position, self.scale, self.rotation)
+                newVertices.append(newVertex)
+            self.mesh.vertices = newVertices
+
+            ## Reset transformations
+            self.position = Vec3(0, 0, 0)
+            self.scale = Scale(1, 1, 1)
+            self.rotation = Euler(0, 0, 0)
+
+    ## Get the bounding box of a given set of faces
+    def boundingBox(self, faces=None):
+        if self.type == 'mesh':
+            ## Use the object's faces if none provided
+            if faces == None: faces = copy.deepcopy(self.mesh.faces)
+
+            ## Get the transformed vertices from the faces
+            vertices = [self.mesh.vertices[vertex] for face in faces for vertex in face]
+            transformedVertices = [
+                vertex.applyTransforms(self.position, self.scale, self.rotation) for vertex in vertices
+            ]
+
+            ## Get the min and max in all directions
+            minX = min(vertex.x for vertex in transformedVertices) - 0.06
+            minY = min(vertex.y for vertex in transformedVertices) - 0.06
+            minZ = min(vertex.z for vertex in transformedVertices) - 0.06
+
+            maxX = max(vertex.x for vertex in transformedVertices) + 0.06
+            maxY = max(vertex.y for vertex in transformedVertices) + 0.06
+            maxZ = max(vertex.z for vertex in transformedVertices) + 0.06
+
+            return Vec3(minX, minY, minZ), Vec3(maxX, maxY, maxZ)
+        elif self.type in ['sphere', 'light']:
+            minVec = self.position - Vec3(self.scale.x/2, self.scale.x/2, self.scale.x/2) - Vec3(0.06, 0.06, 0.06)
+            maxVec = self.position + Vec3(self.scale.x/2, self.scale.x/2, self.scale.x/2) + Vec3(0.06, 0.06, 0.06)
+            
+            return minVec, maxVec
+        elif self.type in ['empty', 'camera']:
+            return self.position, self.position
+        else:
+            return None
+    
+    ## Convert object to dictionary
     def toDict(self):
+        ## Standard data for all types of object
         data = {
             'id': self.id,
 
@@ -1114,6 +1126,7 @@ class Object:
             'bvh': self.bvh.toDict(),
         }
 
+        ## Specific sets of data for different types
         if self.type == 'mesh':
             return {
                 **data,
@@ -1122,7 +1135,6 @@ class Object:
         if self.type == 'camera':
             cameraData = {
                 'length': self.length,
-                
                 'boundCam': self == self.scene.camera,
             }
             
@@ -1139,28 +1151,27 @@ class Object:
         
         return data
     
+    ## Convert dictionary to object
     @staticmethod
     def fromDict(data): # NOTE ## Objects are loaded into a new empty scene if loaded individually. To load into a given scene, either load the scene itself, or load the object and then reset its scene property to the correct scene.
         type = data.get('type', 'empty')
 
+        ## Create object depending on type
         if type == 'mesh':
             obj = Object(scene=Scene())
             obj.mesh = Mesh.fromDict(data.get('mesh', {'vertices': [], 'faces': []}))
-
         elif type == 'camera':
             obj = Camera(scene=Scene())
             obj.length = data.get('length', 1)
-
         elif type == 'light':
             obj = Light(scene=Scene())
             obj.strength = data.get('strength', 1)
-        
         elif type == 'sphere':
             obj = Sphere(scene=Scene())
-        
         else:
             obj = Object(scene=Scene())
 
+        ## Set object data
         obj.name = data.get('name', 'Empty Object')
         obj.type = type
         
@@ -1177,77 +1188,38 @@ class Object:
         
         return obj
     
-    def setTransforms(self):
-        if self.type == 'mesh':
-            for vertex in self.mesh.vertices:
-                vertex.setTransforms(self.position, self.scale, self.rotation)
+    ## Load shader JSON data as a shader
+    def loadShadersFromJSON(self, filepath):
+        with open(filepath, 'r') as file:
+            data = json.load(file)
+        
+        ## Get shaders and indices list
+        shadersJSON= data.get("shaders", {})
+        facesJSON = data.get("faces", {})
+        
+        ## Clip list if too long
+        if len(facesJSON) > len(self.mesh.faces):
+            facesJSON = facesJSON[:len(self.mesh.faces)]
 
-            self.position = Vec3(0, 0, 0)
-            self.scale = Scale(1, 1, 1)
-            self.rotation = Euler(0, 0, 0)
-
-    def boundingBox(self, faces=None):
-        if self.type == 'mesh':
-            if faces == None: faces = copy.deepcopy(self.mesh.faces)
-            vertices = [self.mesh.vertices[vertex] for face in faces for vertex in face]
-            transformedVertices = [
-                vertex.applyTransforms(self.position, self.scale, self.rotation) for vertex in vertices
-            ]
-
-            minX = min(vertex.x for vertex in transformedVertices) - 0.06
-            minY = min(vertex.y for vertex in transformedVertices) - 0.06
-            minZ = min(vertex.z for vertex in transformedVertices) - 0.06
-
-            maxX = max(vertex.x for vertex in transformedVertices) + 0.06
-            maxY = max(vertex.y for vertex in transformedVertices) + 0.06
-            maxZ = max(vertex.z for vertex in transformedVertices) + 0.06
-
-            return Vec3(minX, minY, minZ), Vec3(maxX, maxY, maxZ)
-        elif self.type in ['sphere', 'light']:
-            minVec = self.position - Vec3(self.scale.x/2, self.scale.x/2, self.scale.x/2) - Vec3(0.06, 0.06, 0.06)
-            maxVec = self.position + Vec3(self.scale.x/2, self.scale.x/2, self.scale.x/2) + Vec3(0.06, 0.06, 0.06)
-            
-            return minVec, maxVec
-        elif self.type == 'empty':
-            return self.position, self.position
-        else:
-            return None
-
+        self.shaders = [shader for shader in shadersJSON.values()]
+        self.shaderIndices = [shaderIndex for shaderIndex in facesJSON.values()]
     
-    def buildBVH(self, faces=None, depth=0, maxTrianglesPerLeaf=8, maxDepth=100):
-        if self.type in ['sphere', 'light', 'empty', 'camera']:
-            return BVHNode(box=self.boundingBox())
-        
-        if faces == None: faces = copy.deepcopy(self.mesh.faces)
-
-        box = self.boundingBox(faces)
-
-        diffs = [abs(box[0][axis]-box[1][axis]) for axis in range(3)]
-
-        if len(faces) <= maxTrianglesPerLeaf or any(diff <= 0.0006 for diff in diffs) or depth >= maxDepth:
-            return BVHNode(box=box, faces=faces)
-
-        axis = depth % 3
-        
-        faces.sort(key=lambda face: Mesh.centroid(self.mesh.vertices, face)[axis])
-
-        mid = len(faces) // 2
-        leftFaces = faces[:mid]
-        rightFaces = faces[mid:]
-
-        leftNode = self.buildBVH(leftFaces, depth+1, maxTrianglesPerLeaf, maxDepth)
-        rightNode = self.buildBVH(rightFaces, depth+1, maxTrianglesPerLeaf, maxDepth)
-
-        boundingBox = leftNode.merge(rightNode)
-        
-        return BVHNode(box=boundingBox, left=leftNode, right=rightNode)
+    ## Scene property to properly assign id when reassigning scene
+    @property
+    def scene(self):
+        return self.__scene
+    @scene.setter
+    def scene(self, scene):
+        self.__scene = scene
+        self.id = len(self.__scene.objects)
 
 
+## Preset cube (just an empty object with a standard mesh)
 class Cube(Object):
     def __init__(self, scene, name='Cube', position=None) -> None:
         super(Cube, self).__init__(scene, name=name, position=position)
         self.type = 'mesh'
-        self.mesh = Mesh([ # vertices
+        self.mesh = Mesh([ ## Vertices
                 Vec3(1, 1, 1),
                 Vec3(-1, 1, 1),
                 Vec3(-1, -1, 1),
@@ -1257,7 +1229,7 @@ class Cube(Object):
                 Vec3(-1, -1, -1),
                 Vec3(1, -1, -1)
             ],
-            [ # faces
+            [ ## Faces
                 (0, 1, 2),
                 (2, 3, 0),
                 (0, 3, 7),
@@ -1271,14 +1243,20 @@ class Cube(Object):
                 (6, 5, 4),
                 (4, 7, 6),
             ])
+        self.bvh = self.buildBVH()
         super(Cube, self)._defaultShaders()
 
+
+## Preset sphere object (represented by mathematical sphere, not mesh)
 class Sphere(Object):
     def __init__(self, scene, name='Sphere', position=None) -> None:
         super(Sphere, self).__init__(scene, name=name, position=position)
         self.type = 'sphere'
+        self.bvh = self.buildBVH()
         super(Sphere, self)._defaultShaders()
 
+
+## Preset camera object with length information
 class Camera(Object):
     def __init__(self, scene, name='Camera', length=20, position=None) -> None:
         super(Camera, self).__init__(scene, name=name, position=position)
@@ -1286,20 +1264,22 @@ class Camera(Object):
         self.type = 'camera'
         if self.scene.camera == None:
             self.scene.camera = self
+        self.bvh = self.buildBVH()
         super(Camera, self)._defaultShaders()
     
     @property
     def length(self):
         return self.__length*20
-    
     @length.setter
     def length(self, length):
         self.__length = length/20
             
+
+## Preset light object with strength information
 class Light(Object):
     def __init__(self, scene, name='Light', position=None, strength=1) -> None:
         super(Light, self).__init__(scene, name=name, position=position)
         self.type = 'light'
-        self.bvh = self.buildBVH()
         self.strength = strength
+        self.bvh = self.buildBVH()
         super(Light, self)._defaultShaders()
