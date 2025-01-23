@@ -507,7 +507,7 @@ class Vec3:
     ## Project a vector onto another, like a shadow
     def project(self, other):
         if type(other) == Vec3:
-            return other.normalise() * self.component(other.normalise())
+            return self.component(other.normalise()) * other.normalise()
         else:
             raise TypeError(f'Cannot project Vec3 onto type {type(other)}')
     
@@ -564,17 +564,14 @@ class Vec3:
         return math.acos(dotProd/magnitudesProd)
 
     ## Flip a vector over another vector
-    def flipComponent(self, direction):
+    def flip(self, direction):
         if type(direction) != Vec3:
             raise TypeError(f'Cannot flip Vec3 across type {type(direction)}')
 
-        ## Get direction unit vector
         directionUnit = direction.normalise()
-
-        ## Get the projection (shadow) of the ray on the direction vector
         projection = self.project(directionUnit)
 
-        ## Subtract double the projection from the original vector to get the flipped vector
+        ## Subtract double the projection from the original vector
         flipped = self - (projection * 2)
         
         return flipped

@@ -743,7 +743,7 @@ class Photon:
             diffuseDirection = diffuseDirection * -1
         
         ## Get a perfectly specular reflection
-        specularDirection = ray.direction.flipComponent(normal)
+        specularDirection = ray.direction.flip(normal)
         
         ## Get roughness of the face
         face = collisionInfo['face']
