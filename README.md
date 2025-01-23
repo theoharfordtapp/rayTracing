@@ -3,13 +3,13 @@
 
 A simple ray-tracing engine built in Python from first principles, without the help of more complex libraries such as Numpy.
 
-## Usage\
+## Usage
 After installing and importing the required libraries:
 
-### 1: App-based\
+### 1: App-based
 Run explorer.py
 
-### 2: Code-based\
+### 2: Code-based
 Create a `Scene()` instance. This represents the main 3D environment.
 
 Create objects using instances of:\
