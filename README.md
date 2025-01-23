@@ -3,10 +3,13 @@
 
 A simple ray-tracing engine built in Python from first principles, without the help of more complex libraries such as Numpy.
 
-## Usage
-
+## Usage\
 After installing and importing the required libraries:
 
+### 1: App-based\
+Run explorer.py
+
+### 2: Code-based\
 Create a `Scene()` instance. This represents the main 3D environment.
 
 Create objects using instances of:\
@@ -33,4 +36,4 @@ All three of these require a `scene` parameter, and take an optional `options` p
 Render the scene using the `{engine}.render()` method on any rendering engine. This provides a `Rendered()` object, from which information such as `rays`, `time`, `traces`, etc. can be obtained.\
 To get the actual image, use the `{rendered}.imageAs()`, providing a `type` parameter: `list` for raw image data, `np` for a numpy array, and `cv2` for a BGR-flipped numpy array, for use with Python-OpenCV.
 
-### Run cornellTest.py for a demo.
+### Run cornellTest.py (or load cornellScene.json into the explorer and render) for a demo.
